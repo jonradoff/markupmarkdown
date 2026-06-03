@@ -1,5 +1,3 @@
-import { Link } from "react-router-dom";
-
 export default function Footer() {
   return (
     <footer className="border-t border-rule bg-card">
@@ -17,12 +15,22 @@ export default function Footer() {
           {" · "}MIT licensed
         </div>
         <nav className="flex items-center gap-4">
-          <Link to="/terms" className="hover:text-accent">
+          <a
+            href="https://metavert.io/terms-of-service"
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-accent"
+          >
             Terms
-          </Link>
-          <Link to="/privacy" className="hover:text-accent">
+          </a>
+          <a
+            href="https://metavert.io/privacy-policy"
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-accent"
+          >
             Privacy
-          </Link>
+          </a>
           <a
             href="https://metavert.io"
             target="_blank"

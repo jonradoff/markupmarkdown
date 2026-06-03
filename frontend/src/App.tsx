@@ -1,8 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import HomePage from "./pages/Home";
 import DocumentPage from "./pages/Document";
-import TermsPage from "./pages/Terms";
-import PrivacyPage from "./pages/Privacy";
 import AuthorBadge from "./components/AuthorBadge";
 import ThemeToggle from "./components/ThemeToggle";
 import Footer from "./components/Footer";
@@ -28,8 +26,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/d/:id" element={<DocumentPage />} />
-          <Route path="/terms" element={<TermsPage />} />
-          <Route path="/privacy" element={<PrivacyPage />} />
         </Routes>
       </main>
       <Footer />
