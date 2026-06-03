@@ -16,7 +16,7 @@ export default function Footer() {
         </div>
         <nav className="flex items-center gap-4">
           <a
-            href="https://metavert.io/terms-of-service"
+            href="https://www.metavert.io/terms-of-service"
             target="_blank"
             rel="noreferrer"
             className="hover:text-accent"
@@ -24,7 +24,7 @@ export default function Footer() {
             Terms
           </a>
           <a
-            href="https://metavert.io/privacy-policy"
+            href="https://www.metavert.io/privacy-policy"
             target="_blank"
             rel="noreferrer"
             className="hover:text-accent"
