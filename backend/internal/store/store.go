@@ -39,12 +39,13 @@ func (s *Store) Close(ctx context.Context) error {
 	return s.client.Disconnect(ctx)
 }
 
-func (s *Store) Documents() *mongo.Collection    { return s.db.Collection("documents") }
-func (s *Store) Comments() *mongo.Collection     { return s.db.Collection("comments") }
-func (s *Store) Users() *mongo.Collection        { return s.db.Collection("users") }
-func (s *Store) Sessions() *mongo.Collection     { return s.db.Collection("sessions") }
-func (s *Store) AuthStates() *mongo.Collection   { return s.db.Collection("auth_states") }
-func (s *Store) UserSecrets() *mongo.Collection  { return s.db.Collection("user_secrets") }
+func (s *Store) Documents() *mongo.Collection      { return s.db.Collection("documents") }
+func (s *Store) Comments() *mongo.Collection       { return s.db.Collection("comments") }
+func (s *Store) Users() *mongo.Collection          { return s.db.Collection("users") }
+func (s *Store) Sessions() *mongo.Collection       { return s.db.Collection("sessions") }
+func (s *Store) AuthStates() *mongo.Collection     { return s.db.Collection("auth_states") }
+func (s *Store) UserSecrets() *mongo.Collection    { return s.db.Collection("user_secrets") }
+func (s *Store) DocumentViews() *mongo.Collection  { return s.db.Collection("document_views") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -69,6 +70,57 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "parent_id", Value: 1}}},
 	})
+	_, _ = s.DocumentViews().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "last_viewed_at", Value: -1}}},
+		{Keys: bson.D{{Key: "document_id", Value: 1}}},
+	})
+}
+
+// RecordDocumentView upserts the (doc, user) pair with the current timestamp.
+// Cheap: a single Mongo upsert per page view. Used to scope the home-page
+// list to docs the user has actually engaged with.
+func (s *Store) RecordDocumentView(ctx context.Context, documentID, userID string) error {
+	if documentID == "" || userID == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	id := documentID + ":" + userID
+	_, err := s.DocumentViews().UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{
+			"$set":         bson.M{"last_viewed_at": now},
+			"$setOnInsert": bson.M{
+				"_id":             id,
+				"document_id":     documentID,
+				"user_id":         userID,
+				"first_viewed_at": now,
+			},
+		},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+func (s *Store) viewedDocumentIDs(ctx context.Context, userID string) ([]string, error) {
+	cur, err := s.DocumentViews().Find(ctx,
+		bson.M{"user_id": userID},
+		options.Find().SetProjection(bson.M{"document_id": 1}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		DocumentID string `bson:"document_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.DocumentID)
+	}
+	return ids, nil
 }
 
 // User secrets
@@ -259,13 +311,15 @@ func (s *Store) ListDocuments(ctx context.Context) ([]models.Document, error) {
 	return out, nil
 }
 
-// ListDocumentsForUser returns documents the user has demonstrably worked on:
-// docs they created, AI-revised, or commented/replied on. Sorted newest-first.
-// The caller is responsible for filtering out private docs the user has lost
-// GitHub access to (see api.checkDocAccess).
+// ListDocumentsForUser returns documents the user has demonstrably engaged
+// with: docs they viewed, created, AI-revised, or commented/replied on.
+// Sorted newest-first by the doc's updated_at. The caller is responsible
+// for filtering out private docs the user has lost GitHub access to.
 func (s *Store) ListDocumentsForUser(ctx context.Context, userID string) ([]models.Document, error) {
-	// Find every doc that has a comment or reply authored by this user.
-	commentedIDs := map[string]struct{}{}
+	// Union of doc IDs from: comments authored by user, views, etc.
+	idSet := map[string]struct{}{}
+
+	// Comments authored by this user.
 	cur, err := s.Comments().Find(ctx, bson.M{
 		"$or": []bson.M{
 			{"author_id": userID},
@@ -278,19 +332,26 @@ func (s *Store) ListDocumentsForUser(ctx context.Context, userID string) ([]mode
 		}
 		if err := cur.All(ctx, &rows); err == nil {
 			for _, r := range rows {
-				commentedIDs[r.DocumentID] = struct{}{}
+				idSet[r.DocumentID] = struct{}{}
 			}
 		}
 		_ = cur.Close(ctx)
+	}
+
+	// Docs the user has viewed.
+	if viewed, err := s.viewedDocumentIDs(ctx, userID); err == nil {
+		for _, id := range viewed {
+			idSet[id] = struct{}{}
+		}
 	}
 
 	or := []bson.M{
 		{"created_by_id": userID},
 		{"revision_meta.generated_by_id": userID},
 	}
-	if len(commentedIDs) > 0 {
-		ids := make([]string, 0, len(commentedIDs))
-		for id := range commentedIDs {
+	if len(idSet) > 0 {
+		ids := make([]string, 0, len(idSet))
+		for id := range idSet {
 			ids = append(ids, id)
 		}
 		or = append(or, bson.M{"_id": bson.M{"$in": ids}})
@@ -313,7 +374,10 @@ func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 	if _, err := s.Documents().DeleteOne(ctx, bson.M{"_id": id}); err != nil {
 		return err
 	}
-	_, err := s.Comments().DeleteMany(ctx, bson.M{"document_id": id})
+	if _, err := s.Comments().DeleteMany(ctx, bson.M{"document_id": id}); err != nil {
+		return err
+	}
+	_, err := s.DocumentViews().DeleteMany(ctx, bson.M{"document_id": id})
 	return err
 }
 

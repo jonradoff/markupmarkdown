@@ -165,6 +165,11 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	// Record the view so the doc shows up in the user's home-page list.
+	// Fire-and-forget — never block the response on this.
+	if u := a.currentUser(r); u != nil {
+		go a.store.RecordDocumentView(context.Background(), doc.ID, u.ID)
+	}
 	resp := documentResponse{Document: doc}
 	if doc.ParentID != "" {
 		if parent, _ := a.store.GetDocument(r.Context(), doc.ParentID); parent != nil {

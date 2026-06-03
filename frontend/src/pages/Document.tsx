@@ -293,28 +293,45 @@ export default function DocumentPage() {
     }
   }, [activeId]);
 
-  // Step through with j/k or arrow keys when nothing is in focus
+  // Move active comment by `dir` (-1 prev, +1 next). Wraps at the ends so
+  // pressing Next on the last comment goes back to the first.
+  const stepComment = useCallback(
+    (dir: -1 | 1) => {
+      if (visibleComments.length === 0) return;
+      const idx = visibleComments.findIndex((c) => c.id === activeId);
+      let next: number;
+      if (idx === -1) {
+        next = dir > 0 ? 0 : visibleComments.length - 1;
+      } else {
+        next = (idx + dir + visibleComments.length) % visibleComments.length;
+      }
+      setActiveId(visibleComments[next].id);
+    },
+    [visibleComments, activeId]
+  );
+
+  const activeIndex = useMemo(
+    () => visibleComments.findIndex((c) => c.id === activeId),
+    [visibleComments, activeId]
+  );
+
+  // Keyboard: j/k or ↑/↓ to step through comments when no input is focused.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (visibleComments.length === 0) return;
 
-      let dir = 0;
+      let dir: -1 | 1 | 0 = 0;
       if (e.key === "j" || e.key === "ArrowDown") dir = 1;
       if (e.key === "k" || e.key === "ArrowUp") dir = -1;
       if (!dir) return;
       e.preventDefault();
-
-      const idx = visibleComments.findIndex((c) => c.id === activeId);
-      let next: number;
-      if (idx === -1) next = dir > 0 ? 0 : visibleComments.length - 1;
-      else next = Math.min(visibleComments.length - 1, Math.max(0, idx + dir));
-      setActiveId(visibleComments[next].id);
+      stepComment(dir);
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [visibleComments, activeId]);
+  }, [visibleComments, stepComment]);
 
   async function renameDoc() {
     if (!doc) return;
@@ -504,30 +521,59 @@ export default function DocumentPage() {
         ref={sidebarRef}
         className="w-96 shrink-0 border-l border-rule bg-card overflow-y-auto"
       >
-        <div className="sticky top-0 z-10 bg-card border-b border-rule px-4 py-3 flex items-center gap-2">
-          <Link to="/" className="text-sm text-muted hover:text-accent">
-            ← All docs
-          </Link>
-          <div className="ml-auto flex items-center gap-1 text-xs">
-            <FilterButton
-              active={filter === "open"}
-              onClick={() => setFilter("open")}
-            >
-              Open <Count n={openCount} />
-            </FilterButton>
-            <FilterButton
-              active={filter === "resolved"}
-              onClick={() => setFilter("resolved")}
-            >
-              Done <Count n={resolvedCount} />
-            </FilterButton>
-            <FilterButton
-              active={filter === "all"}
-              onClick={() => setFilter("all")}
-            >
-              All <Count n={comments.length} />
-            </FilterButton>
+        <div className="sticky top-0 z-10 bg-card border-b border-rule">
+          <div className="px-4 py-3 flex items-center gap-2">
+            <Link to="/" className="text-sm text-muted hover:text-accent">
+              ← All docs
+            </Link>
+            <div className="ml-auto flex items-center gap-1 text-xs">
+              <FilterButton
+                active={filter === "open"}
+                onClick={() => setFilter("open")}
+              >
+                Open <Count n={openCount} />
+              </FilterButton>
+              <FilterButton
+                active={filter === "resolved"}
+                onClick={() => setFilter("resolved")}
+              >
+                Done <Count n={resolvedCount} />
+              </FilterButton>
+              <FilterButton
+                active={filter === "all"}
+                onClick={() => setFilter("all")}
+              >
+                All <Count n={comments.length} />
+              </FilterButton>
+            </div>
           </div>
+          {visibleComments.length > 0 && (
+            <div className="px-4 pb-2 -mt-1 flex items-center gap-2 text-xs">
+              <button
+                onClick={() => stepComment(-1)}
+                title="Previous comment (k or ↑)"
+                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+                Prev
+              </button>
+              <button
+                onClick={() => stepComment(1)}
+                title="Next comment (j or ↓)"
+                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+              >
+                Next
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+              <div className="ml-auto text-faint tabular-nums">
+                {activeIndex >= 0 ? activeIndex + 1 : "—"} of {visibleComments.length}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="p-3 space-y-2">
