@@ -77,6 +77,35 @@ export default function DocumentPage() {
     };
   }, [id]);
 
+  // If the doc has a newer descendant, ask the user once (per session) if
+  // they'd like to jump to it. Dismissals are remembered so navigating back
+  // to this doc doesn't keep popping the prompt.
+  useEffect(() => {
+    if (!doc || !doc.latestDescendant) return;
+    const latestId = doc.latestDescendant.id;
+    if (latestId === doc.id) return;
+    const dismissKey = `mm:dismissed-latest:${doc.id}`;
+    if (sessionStorage.getItem(dismissKey) === "1") return;
+    let cancelled = false;
+    (async () => {
+      const ok = await dialog.confirm({
+        title: "A newer revision exists",
+        body: `"${doc.latestDescendant!.title}" is the most recent AI-revised version of this document. Open it instead?`,
+        confirmLabel: "Open latest",
+        cancelLabel: "Stay here",
+      });
+      if (cancelled) return;
+      if (ok) {
+        navigate(`/d/${latestId}`);
+      } else {
+        sessionStorage.setItem(dismissKey, "1");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, dialog, navigate]);
+
   // Apply highlights after every render of doc content / comments / active
   useLayoutEffect(() => {
     const el = contentRef.current;

@@ -46,6 +46,7 @@ export interface MdDocument {
   revisionMeta?: RevisionMeta;
   parent?: ParentSummary;
   children?: RevisionSummary[];
+  latestDescendant?: ParentSummary;
   createdAt: string;
   updatedAt: string;
 }

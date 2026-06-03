@@ -142,8 +142,9 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 
 type documentResponse struct {
 	*models.Document
-	Parent   *parentSummary    `json:"parent,omitempty"`
-	Children []revisionSummary `json:"children,omitempty"`
+	Parent           *parentSummary    `json:"parent,omitempty"`
+	Children         []revisionSummary `json:"children,omitempty"`
+	LatestDescendant *parentSummary    `json:"latestDescendant,omitempty"`
 }
 
 type parentSummary struct {
@@ -184,6 +185,9 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:    c.CreatedAt,
 				RevisionMeta: c.RevisionMeta,
 			})
+		}
+		if latest, _ := a.store.LatestDescendant(r.Context(), doc.ID); latest != nil && latest.ID != doc.ID {
+			resp.LatestDescendant = &parentSummary{ID: latest.ID, Title: latest.Title}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

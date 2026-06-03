@@ -189,6 +189,38 @@ func (s *Store) ListChildren(ctx context.Context, parentID string) ([]models.Doc
 	return out, nil
 }
 
+// LatestDescendant walks the revision tree starting at docID, always picking
+// the most recently created child, until it hits a leaf. Returns nil if the
+// given doc has no children. Guards against cycles defensively.
+func (s *Store) LatestDescendant(ctx context.Context, docID string) (*models.Document, error) {
+	current := docID
+	var latest *models.Document
+	seen := map[string]bool{}
+	for {
+		if seen[current] {
+			break
+		}
+		seen[current] = true
+		children, err := s.ListChildren(ctx, current)
+		if err != nil {
+			return latest, err
+		}
+		if len(children) == 0 {
+			break
+		}
+		next := children[0]
+		for i := 1; i < len(children); i++ {
+			if children[i].CreatedAt.After(next.CreatedAt) {
+				next = children[i]
+			}
+		}
+		copied := next
+		latest = &copied
+		current = next.ID
+	}
+	return latest, nil
+}
+
 // Users + Sessions
 
 func (s *Store) UpsertUserByGitHubID(ctx context.Context, u *models.User) error {
