@@ -1,0 +1,24 @@
+server:
+  host: ${SERVER_HOST:0.0.0.0}
+  port: ${SERVER_PORT:4721}
+
+database:
+  uri: ${MONGODB_URI}
+  name: ${DATABASE_NAME:markupmarkdown}
+
+frontend:
+  url: ${FRONTEND_URL:https://markupmarkdown.fly.dev}
+  static_dir: ${FRONTEND_STATIC_DIR:./web/dist}
+
+fetch:
+  timeout: ${FETCH_TIMEOUT:15s}
+  max_bytes: ${FETCH_MAX_BYTES:5242880}
+
+github:
+  client_id: ${GITHUB_CLIENT_ID:}
+  client_secret: ${GITHUB_CLIENT_SECRET:}
+  callback_url: ${GITHUB_CALLBACK_URL:https://markupmarkdown.fly.dev/api/auth/github/callback}
+  scope: ${GITHUB_SCOPE:read:user user:email repo}
+
+encryption:
+  master_key: ${MARKUPMARKDOWN_ENCRYPTION_KEY:}

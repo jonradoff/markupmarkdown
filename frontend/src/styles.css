@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #fafaf7;
+  --color-card: #ffffff;
+  --color-ink: #1f2328;
+  --color-muted: #6b7280;
+  --color-faint: #9ca3af;
+  --color-soft: #f3f4f6;
+  --color-rule: #e5e7eb;
+  --color-accent: #4f46e5;
+  --color-accent-fg: #ffffff;
+  --color-accent-soft: #eef2ff;
+  --color-tip-bg: #1f2937;
+  --color-tip-fg: #ffffff;
+  --color-highlight: #fef3c7;
+  --color-highlight-active: #fde68a;
+  --color-highlight-border: #f59e0b;
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-code-bg: #0f172a;
+  --color-code-fg: #e2e8f0;
+}
+
+.dark {
+  --color-paper: #0b1119;
+  --color-card: #131a24;
+  --color-ink: #e2e8f0;
+  --color-muted: #94a3b8;
+  --color-faint: #64748b;
+  --color-soft: #1f2937;
+  --color-rule: #1f2937;
+  --color-accent: #818cf8;
+  --color-accent-fg: #0b1119;
+  --color-accent-soft: #1e1b4b;
+  /* tip-bg/fg intentionally inherit light values so the popover stays dark in both modes */
+  --color-highlight: #78350f;
+  --color-highlight-active: #92400e;
+  --color-highlight-border: #f59e0b;
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-code-bg: #020617;
+  --color-code-fg: #e2e8f0;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Highlighted commented spans */
+.mm-highlight {
+  background-color: var(--color-highlight);
+  border-bottom: 2px solid var(--color-highlight-border);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background-color 120ms ease;
+}
+.mm-highlight:hover {
+  background-color: var(--color-highlight-active);
+}
+.mm-highlight[data-active="true"] {
+  background-color: var(--color-highlight-active);
+  box-shadow: 0 0 0 2px var(--color-highlight-border) inset;
+}
+.mm-highlight[data-resolved="true"] {
+  background-color: transparent;
+  border-bottom: 1px dashed var(--color-faint);
+}
+.mm-highlight[data-resolved="true"]:hover {
+  background-color: var(--color-soft);
+}
+
+/* Markdown prose */
+.mm-prose {
+  max-width: 740px;
+  line-height: 1.7;
+  color: var(--color-ink);
+}
+.mm-prose h1 { font-size: 2rem; font-weight: 700; margin: 1.5rem 0 1rem; }
+.mm-prose h2 { font-size: 1.5rem; font-weight: 700; margin: 1.5rem 0 0.75rem; }
+.mm-prose h3 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+.mm-prose h4 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+.mm-prose p { margin: 0.75rem 0; }
+.mm-prose ul { list-style: disc; padding-left: 1.5rem; margin: 0.5rem 0; }
+.mm-prose ol { list-style: decimal; padding-left: 1.5rem; margin: 0.5rem 0; }
+.mm-prose li { margin: 0.25rem 0; }
+.mm-prose blockquote {
+  border-left: 4px solid var(--color-rule);
+  padding-left: 1rem;
+  color: var(--color-muted);
+  margin: 0.75rem 0;
+}
+.mm-prose code {
+  background: var(--color-soft);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.mm-prose pre {
+  background: var(--color-code-bg);
+  color: var(--color-code-fg);
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+.mm-prose pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.mm-prose a { color: var(--color-accent); text-decoration: underline; }
+.mm-prose table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+.mm-prose th, .mm-prose td {
+  border: 1px solid var(--color-rule);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+.mm-prose hr { border: 0; border-top: 1px solid var(--color-rule); margin: 2rem 0; }
+.mm-prose img { max-width: 100%; height: auto; }

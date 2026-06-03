@@ -1,0 +1,10 @@
+**/.git
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/.DS_Store
+backend/markupmarkdown
+backend/.env
+backend/cmd/markupmarkdown/markupmarkdown
+*.log

@@ -1,0 +1,25 @@
+app = 'markupmarkdown'
+primary_region = 'ewr'
+
+[build]
+
+[env]
+  MARKUPMARKDOWN_ENV = 'prod'
+  SERVER_HOST = '0.0.0.0'
+  SERVER_PORT = '4721'
+  FRONTEND_STATIC_DIR = '/app/web/dist'
+  FRONTEND_URL = 'https://mumd.metavert.io'
+  DATABASE_NAME = 'markupmarkdown'
+  GITHUB_CALLBACK_URL = 'https://mumd.metavert.io/api/auth/github/callback'
+
+[http_service]
+  internal_port = 4721
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1

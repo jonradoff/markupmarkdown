@@ -1,0 +1,23 @@
+server:
+  host: ${SERVER_HOST:localhost}
+  port: ${SERVER_PORT:4721}
+
+database:
+  uri: ${MONGODB_URI}
+  name: ${DATABASE_NAME:markupmarkdown-dev}
+
+frontend:
+  url: ${FRONTEND_URL:http://localhost:4720}
+
+fetch:
+  timeout: ${FETCH_TIMEOUT:15s}
+  max_bytes: ${FETCH_MAX_BYTES:5242880}
+
+github:
+  client_id: ${GITHUB_CLIENT_ID:}
+  client_secret: ${GITHUB_CLIENT_SECRET:}
+  callback_url: ${GITHUB_CALLBACK_URL:http://localhost:4721/api/auth/github/callback}
+  scope: ${GITHUB_SCOPE:read:user user:email repo}
+
+encryption:
+  master_key: ${MARKUPMARKDOWN_ENCRYPTION_KEY:}
