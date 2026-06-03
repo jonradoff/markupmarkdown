@@ -46,6 +46,11 @@ type Document struct {
 	ParentID     string        `bson:"parent_id,omitempty" json:"parentId,omitempty"`
 	RevisionMeta *RevisionMeta `bson:"revision_meta,omitempty" json:"revisionMeta,omitempty"`
 
+	// CreatedByID is the authenticated user (GitHub login) who created this
+	// document. Empty for documents created anonymously. Used by
+	// ListDocumentsForUser to scope the home-page list to docs you worked on.
+	CreatedByID string `bson:"created_by_id,omitempty" json:"-"`
+
 	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
 }
@@ -84,6 +89,7 @@ type Anchor struct {
 type Reply struct {
 	ID        string    `bson:"id" json:"id"`
 	Author    string    `bson:"author" json:"author"`
+	AuthorID  string    `bson:"author_id,omitempty" json:"-"`
 	Body      string    `bson:"body" json:"body"`
 	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
@@ -94,6 +100,7 @@ type Comment struct {
 	DocumentID string    `bson:"document_id" json:"documentId"`
 	Anchor     Anchor    `bson:"anchor" json:"anchor"`
 	Author     string    `bson:"author" json:"author"`
+	AuthorID   string    `bson:"author_id,omitempty" json:"-"`
 	Body       string    `bson:"body" json:"body"`
 	Resolved   bool      `bson:"resolved" json:"resolved"`
 	ResolvedBy string    `bson:"resolved_by,omitempty" json:"resolvedBy,omitempty"`

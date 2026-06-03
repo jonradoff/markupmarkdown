@@ -108,6 +108,9 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
+	if u := a.currentUser(r); u != nil {
+		c.AuthorID = u.ID
+	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -242,6 +245,9 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		Body:      body,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if u := a.currentUser(r); u != nil {
+		reply.AuthorID = u.ID
 	}
 	c, err := a.store.AppendReply(r.Context(), id, reply)
 	if err != nil {

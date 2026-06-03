@@ -259,6 +259,56 @@ func (s *Store) ListDocuments(ctx context.Context) ([]models.Document, error) {
 	return out, nil
 }
 
+// ListDocumentsForUser returns documents the user has demonstrably worked on:
+// docs they created, AI-revised, or commented/replied on. Sorted newest-first.
+// The caller is responsible for filtering out private docs the user has lost
+// GitHub access to (see api.checkDocAccess).
+func (s *Store) ListDocumentsForUser(ctx context.Context, userID string) ([]models.Document, error) {
+	// Find every doc that has a comment or reply authored by this user.
+	commentedIDs := map[string]struct{}{}
+	cur, err := s.Comments().Find(ctx, bson.M{
+		"$or": []bson.M{
+			{"author_id": userID},
+			{"replies.author_id": userID},
+		},
+	}, options.Find().SetProjection(bson.M{"document_id": 1}))
+	if err == nil {
+		var rows []struct {
+			DocumentID string `bson:"document_id"`
+		}
+		if err := cur.All(ctx, &rows); err == nil {
+			for _, r := range rows {
+				commentedIDs[r.DocumentID] = struct{}{}
+			}
+		}
+		_ = cur.Close(ctx)
+	}
+
+	or := []bson.M{
+		{"created_by_id": userID},
+		{"revision_meta.generated_by_id": userID},
+	}
+	if len(commentedIDs) > 0 {
+		ids := make([]string, 0, len(commentedIDs))
+		for id := range commentedIDs {
+			ids = append(ids, id)
+		}
+		or = append(or, bson.M{"_id": bson.M{"$in": ids}})
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}})
+	cur2, err := s.Documents().Find(ctx, bson.M{"$or": or}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur2.Close(ctx)
+	var out []models.Document
+	if err := cur2.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 	if _, err := s.Documents().DeleteOne(ctx, bson.M{"_id": id}); err != nil {
 		return err

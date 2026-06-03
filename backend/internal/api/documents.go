@@ -28,8 +28,21 @@ type patchDocumentRequest struct {
 	Title *string `json:"title,omitempty"`
 }
 
+// listDocuments returns only documents the signed-in user has worked on:
+// docs they created, AI-revised, or commented/replied on. Private docs the
+// user has lost GitHub access to are filtered out. Unauthenticated callers
+// get 401 — the frontend shows a "sign in to see your files" message.
 func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
-	docs, err := a.store.ListDocuments(r.Context())
+	user := a.currentUser(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, fetchErrorResponse{
+			Error: "Sign in with GitHub to see your recent documents.",
+			Kind:  "sign_in_required",
+		})
+		return
+	}
+
+	docs, err := a.store.ListDocumentsForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -37,6 +50,7 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 	if docs == nil {
 		docs = []models.Document{}
 	}
+
 	type summary struct {
 		ID          string `json:"id"`
 		Title       string `json:"title"`
@@ -48,9 +62,17 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 		CreatedAt   string `json:"createdAt"`
 		UpdatedAt   string `json:"updatedAt"`
 	}
-	out := make([]summary, len(docs))
-	for i, d := range docs {
-		out[i] = summary{
+	out := make([]summary, 0, len(docs))
+	for _, d := range docs {
+		// Filter private docs the user has lost access to. Public docs
+		// pass through automatically.
+		if d.Private {
+			ok, err := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, d.GitHubOwner, d.GitHubRepo)
+			if err != nil || !ok {
+				continue
+			}
+		}
+		out = append(out, summary{
 			ID:          d.ID,
 			Title:       d.Title,
 			SourceURL:   d.SourceURL,
@@ -60,7 +82,7 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 			GitHubRepo:  d.GitHubRepo,
 			CreatedAt:   d.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt:   d.UpdatedAt.UTC().Format(time.RFC3339),
-		}
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -76,6 +98,9 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 		ID:        uuid.NewString(),
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
+	}
+	if u := a.currentUser(r); u != nil {
+		doc.CreatedByID = u.ID
 	}
 
 	if req.URL != "" {
