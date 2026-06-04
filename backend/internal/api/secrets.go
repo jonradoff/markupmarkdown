@@ -49,6 +49,12 @@ func (a *API) putAnthropicKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "sign in required")
 		return
 	}
+	// Storing credentials is cookie-only. A leaked token must not be able
+	// to swap in an attacker-controlled Anthropic key.
+	if _, hasToken := tokenInfoFromRequest(r); hasToken {
+		writeError(w, http.StatusForbidden, "API keys can only be set from a signed-in browser session")
+		return
+	}
 	if a.vault == nil {
 		writeError(w, http.StatusServiceUnavailable, "this server is not configured to store API keys (encryption key missing)")
 		return
@@ -103,6 +109,10 @@ func (a *API) deleteAnthropicKey(w http.ResponseWriter, r *http.Request) {
 	user := a.currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	if _, hasToken := tokenInfoFromRequest(r); hasToken {
+		writeError(w, http.StatusForbidden, "API keys can only be deleted from a signed-in browser session")
 		return
 	}
 	if err := a.store.DeleteAnthropicKey(r.Context(), user.ID); err != nil {

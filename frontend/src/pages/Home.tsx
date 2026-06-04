@@ -5,11 +5,13 @@ import type { DocumentSummary, TrashItem } from "../types";
 import { formatRelative } from "../utils/format";
 import ErrorBlock from "../components/ErrorBlock";
 import { useDialog } from "../components/Dialogs";
+import { useToast, toastMessageFor } from "../components/Toast";
 import { useAuth } from "../auth";
 
 export default function HomePage() {
   const navigate = useNavigate();
   const dialog = useDialog();
+  const toast = useToast();
   const { user, githubEnabled, loginURL, loading: authLoading } = useAuth();
   const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
   const [trash, setTrash] = useState<TrashItem[] | null>(null);
@@ -50,8 +52,9 @@ export default function HomePage() {
     try {
       await api.restoreDocument(id);
       await refresh();
+      toast.success("Restored");
     } catch (err) {
-      setErrFrom(err);
+      toast.error(toastMessageFor(err) || "Couldn't restore that document.");
     }
   }
 
@@ -108,8 +111,9 @@ export default function HomePage() {
     try {
       await api.deleteDocument(id);
       refresh();
+      toast.success("Moved to Trash");
     } catch (err) {
-      setErrFrom(err);
+      toast.error(toastMessageFor(err) || "Couldn't delete the document.");
     }
   }
 

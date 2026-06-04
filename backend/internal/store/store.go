@@ -101,21 +101,6 @@ func (s *Store) LogTokenEvent(ctx context.Context, e *models.TokenEvent) error {
 	return err
 }
 
-// MostRecentTokenEvent returns the latest event for (tokenID, action) — used
-// by the sampler to avoid writing more than one event per minute per action.
-func (s *Store) MostRecentTokenEvent(ctx context.Context, tokenID, action string) (*models.TokenEvent, error) {
-	opts := options.FindOne().SetSort(bson.D{{Key: "at", Value: -1}})
-	var ev models.TokenEvent
-	err := s.TokenEvents().FindOne(ctx, bson.M{"token_id": tokenID, "action": action}, opts).Decode(&ev)
-	if err == mongo.ErrNoDocuments {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &ev, nil
-}
-
 // ListTokenEvents returns the last `limit` events for a given token, newest first.
 func (s *Store) ListTokenEvents(ctx context.Context, tokenID string, limit int) ([]models.TokenEvent, error) {
 	if limit <= 0 || limit > 200 {

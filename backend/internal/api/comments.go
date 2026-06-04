@@ -203,46 +203,16 @@ func (a *API) decorate(r *http.Request, c *models.Comment) {
 	}
 }
 
-// resolveAgentIdentity overlays one comment in place (used by paths that
-// return a freshly created or updated single comment).
+// resolveAgentIdentity overlays one comment in place. Single round trip:
+// builds a 1-element slice over the pointer's storage so the batched helper
+// can mutate `*c` directly, without the previous "do the work twice" dance.
 func (a *API) resolveAgentIdentity(ctx context.Context, c *models.Comment) {
 	if c == nil {
 		return
 	}
-	a.resolveAgentIdentities(ctx, []models.Comment{*c})
-	// resolveAgentIdentities works on a copy of the slice element; redo
-	// in-place by re-fetching token + user manually for the one item.
-	if c.ActorKind == models.ActorAgent {
-		if c.TokenID != "" {
-			if tok, _ := a.store.GetAPITokensByIDs(ctx, []string{c.TokenID}); tok[c.TokenID] != nil {
-				c.Author = tok[c.TokenID].Label
-			}
-		}
-		if c.AuthorID != "" {
-			if u, _ := a.store.GetUser(ctx, c.AuthorID); u != nil {
-				c.OwnerName = preferName(u)
-				c.OwnerLogin = u.Login
-			}
-		}
-		c.AuthorAvatarURL = ""
-	}
-	for i := range c.Replies {
-		if c.Replies[i].ActorKind != models.ActorAgent {
-			continue
-		}
-		if c.Replies[i].TokenID != "" {
-			if tok, _ := a.store.GetAPITokensByIDs(ctx, []string{c.Replies[i].TokenID}); tok[c.Replies[i].TokenID] != nil {
-				c.Replies[i].Author = tok[c.Replies[i].TokenID].Label
-			}
-		}
-		if c.Replies[i].AuthorID != "" {
-			if u, _ := a.store.GetUser(ctx, c.Replies[i].AuthorID); u != nil {
-				c.Replies[i].OwnerName = preferName(u)
-				c.Replies[i].OwnerLogin = u.Login
-			}
-		}
-		c.Replies[i].AuthorAvatarURL = ""
-	}
+	view := []models.Comment{*c}
+	a.resolveAgentIdentities(ctx, view)
+	*c = view[0]
 }
 
 func mapKeys(m map[string]struct{}) []string {

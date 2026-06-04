@@ -199,6 +199,24 @@ User Anthropic API keys are AES-256-GCM encrypted via `secrets.Vault` (master ke
 
 [skills/markupmarkdown/SKILL.md](skills/markupmarkdown/SKILL.md) is embedded into the Go binary at compile time (via `//go:embed`) and served raw at `/SKILL.md`, `/skill.md`, and `/skill` (all `text/markdown`). If you change the MCP tool surface or token scopes, update SKILL.md in the same commit. The TokensModal links to it; agents are instructed to read it.
 
+### 13. Comment & reply edit/delete is author-only
+
+Beyond doc-access + scope, [comments.go](backend/internal/api/comments.go) `patchComment` / `deleteComment` / `updateReply` / `deleteReply` call `requireMineComment` or `requireMineReply`. The check is `AuthorID == currentUser.ID`. Agent comments stamp `AuthorID` to the token's owning user, so the same equality covers "I wrote this" and "a bot I own wrote this." Even an admin-scope token cannot edit or delete content authored by a different user. The frontend's `comment.mine` boolean is the server-computed answer; the UI gates the edit/delete buttons on it. Keep both in sync.
+
+### 14. Credential-setting endpoints are cookie-only
+
+`POST/PATCH/DELETE /api/me/tokens*`, `PUT/DELETE /api/me/anthropic-key`, and any other endpoint that stores or rotates a user credential must reject Bearer-token auth with 403. Pattern: `if _, hasToken := tokenInfoFromRequest(r); hasToken { 403 }`. A leaked token must not be able to swap the user's Anthropic key, mint new tokens, or change scopes on existing ones.
+
+## Operational notes
+
+These are properties of the running system that won't show up in code review but are worth knowing before scaling or debugging:
+
+- **`repoAccessCache` is per-process with a 2-minute TTL.** [access.go](backend/internal/api/access.go) — if a user is removed from a GitHub org, they keep seeing private docs for up to 2 min. A multi-machine deploy doubles that staleness per machine because the cache isn't shared.
+- **The SSE hub is in-process.** [hub.go](backend/internal/api/hub.go) — `Broadcast` only reaches subscribers connected to *this* machine. If you ever shard the backend, you need a fan-out layer (Redis pubsub, NATS, etc.) or comments-updated events will silently miss viewers on the other replicas.
+- **The PlainText cache is in-process.** [plaintext_cache.go](backend/internal/api/plaintext_cache.go) — same scope as the hub. Cache hit rates drop linearly with replica count; not a correctness issue.
+- **The token-event sampler is in-process.** [tokenlog.go](backend/internal/api/tokenlog.go) — on multi-machine deploys, the per-action sampling effectively becomes "1/min per (token, action, machine)" rather than globally 1/min. Acceptable for a small fleet; if you scale up, move the sampler state to Mongo.
+- **Hub channel lifetime.** Subscribers receive on `sub.Events()` and *also* watch `sub.Done()` for shutdown. The send channel is intentionally never closed (closing it races with Broadcast's send and would panic).
+
 ---
 
 ## How to add a new feature safely

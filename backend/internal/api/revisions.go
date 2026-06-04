@@ -285,6 +285,10 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 		GitHubRef:    parent.GitHubRef,
 		GitHubPath:   parent.GitHubPath,
 		ParentID:     parent.ID,
+		// CreatedByID makes the accepted revision show up in the user's
+		// home list. Without it the doc is reachable only via the parent
+		// doc's revision-tree link.
+		CreatedByID:  user.ID,
 		RevisionMeta: &models.RevisionMeta{
 			Model:             model,
 			AppliedCommentIDs: req.AppliedCommentIDs,

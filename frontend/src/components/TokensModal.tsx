@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
 import { api } from "../api";
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { formatRelative } from "../utils/format";
 import { useDialog } from "./Dialogs";
+import { useToast, toastMessageFor } from "./Toast";
 
 interface Props {
   onClose: () => void;
@@ -41,6 +42,7 @@ const scopeChoices: { value: TokenScope; label: string; hint: string }[] = [
 
 export default function TokensModal({ onClose }: Props) {
   const dialog = useDialog();
+  const toast = useToast();
   const [tokens, setTokens] = useState<APIToken[] | null>(null);
   const [label, setLabel] = useState("");
   const [scope, setScope] = useState<TokenScope>("write");
@@ -53,12 +55,23 @@ export default function TokensModal({ onClose }: Props) {
   const [editLabel, setEditLabel] = useState("");
   const [activityFor, setActivityFor] = useState<string | null>(null);
   const [activity, setActivity] = useState<TokenEvent[] | null>(null);
+  // Per-token "Saved" flash for inline scope-change confirmations.
+  const [scopeSavedId, setScopeSavedId] = useState<string | null>(null);
+  // Request-sequence guard so a stale activity response can't overwrite a
+  // newer one if the user clicks Activity on a second token mid-fetch.
+  const activitySeqRef = useRef(0);
+
+  function reportError(e: unknown, fallback: string) {
+    const msg = toastMessageFor(e) || fallback;
+    setError(msg);
+    toast.error(msg);
+  }
 
   async function refresh() {
     try {
       setTokens(await api.listTokens());
     } catch (e) {
-      setError((e as Error).message);
+      reportError(e, "Couldn't load tokens.");
     }
   }
   useEffect(() => {
@@ -79,7 +92,7 @@ export default function TokensModal({ onClose }: Props) {
       setLabel("");
       await refresh();
     } catch (e) {
-      setError((e as Error).message);
+      reportError(e, "Couldn't create that token.");
     } finally {
       setBusy(false);
     }
@@ -91,8 +104,9 @@ export default function TokensModal({ onClose }: Props) {
       await api.updateToken(id, { label: editLabel.trim() });
       setEditingId(null);
       await refresh();
+      toast.success("Token renamed");
     } catch (e) {
-      setError((e as Error).message);
+      reportError(e, "Couldn't rename that token.");
     }
   }
 
@@ -100,8 +114,16 @@ export default function TokensModal({ onClose }: Props) {
     try {
       await api.updateToken(id, { scope: next });
       await refresh();
+      // Brief flash next to the changed token; auto-clears.
+      setScopeSavedId(id);
+      window.setTimeout(
+        () => setScopeSavedId((cur) => (cur === id ? null : cur)),
+        1500
+      );
     } catch (e) {
-      setError((e as Error).message);
+      reportError(e, "Couldn't change the token's scope.");
+      // Refresh anyway so the dropdown rebinds to the server's value.
+      refresh();
     }
   }
 
@@ -116,19 +138,24 @@ export default function TokensModal({ onClose }: Props) {
     try {
       await api.revokeToken(t.id);
       await refresh();
+      toast.success("Token revoked");
     } catch (e) {
-      setError((e as Error).message);
+      reportError(e, "Couldn't revoke that token.");
     }
   }
 
   async function viewActivity(id: string) {
+    const seq = ++activitySeqRef.current;
     setActivityFor(id);
     setActivity(null);
     try {
       const events = await api.tokenActivity(id);
+      // Discard if a later click has superseded this fetch.
+      if (seq !== activitySeqRef.current) return;
       setActivity(events);
     } catch (e) {
-      setError((e as Error).message);
+      if (seq !== activitySeqRef.current) return;
+      reportError(e, "Couldn't load activity for that token.");
     }
   }
 
@@ -288,6 +315,14 @@ export default function TokensModal({ onClose }: Props) {
                           </option>
                         ))}
                       </select>
+                      {scopeSavedId === t.id && (
+                        <span
+                          className="text-[10px] text-success font-medium"
+                          aria-live="polite"
+                        >
+                          ✓ Saved
+                        </span>
+                      )}
                     </div>
                     <div className="text-[11px] text-muted font-mono">
                       {t.prefix}

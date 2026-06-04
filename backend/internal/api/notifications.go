@@ -11,16 +11,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	"markupmarkdown/internal/httperr"
 	"markupmarkdown/internal/models"
+	"markupmarkdown/internal/render"
 )
 
 // GitHub login pattern: alphanumeric + hyphens, 1–39 chars, cannot start/end
-// with hyphen. We're lenient on those edge rules — the DB lookup is the
-// final authority.
-var mentionPattern = regexp.MustCompile(`(?:^|[^\w])@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}))`)
+// with hyphen. The leading group matches whitespace OR a small set of
+// punctuation we explicitly consider "start of mention" — bare characters
+// like the `:` in "to:user@..." or `.` in word.@user no longer trigger.
+// The DB lookup is still the final authority.
+var mentionPattern = regexp.MustCompile(`(?:^|[\s(\[{>,;!?'"])@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}))`)
+
+// maxMentionsPerBody caps how many distinct mentions one comment can fan out
+// notifications for. A flood of @-mentions becomes a runaway notification
+// storm otherwise; the limit also bounds the DB lookup cost.
+const maxMentionsPerBody = 20
 
 // extractMentions returns the unique set of GitHub-style logins referenced
-// in `body`, lowercased for case-insensitive matching.
+// in `body`, lowercased for case-insensitive matching. Capped at
+// maxMentionsPerBody; excess matches are silently dropped.
 func extractMentions(body string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -31,18 +41,25 @@ func extractMentions(body string) []string {
 		}
 		seen[login] = true
 		out = append(out, login)
+		if len(out) >= maxMentionsPerBody {
+			break
+		}
 	}
 	return out
 }
 
 // previewSnippet returns a short, single-line excerpt of body suitable for
-// the notification list.
+// the notification list. Runs the body through the markdown plain-text
+// extractor so the bell UI shows readable prose instead of literal `**`
+// and `[label](url)` syntax.
 func previewSnippet(body string) string {
-	s := strings.ReplaceAll(body, "\n", " ")
-	s = strings.TrimSpace(s)
+	s := render.PlainText(body)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.Join(strings.Fields(s), " ") // collapse runs of whitespace
 	const max = 140
-	if len(s) > max {
-		return s[:max] + "…"
+	if len([]rune(s)) > max {
+		r := []rune(s)
+		return string(r[:max]) + "…"
 	}
 	return s
 }
@@ -227,7 +244,12 @@ func (a *API) fanOutCommentNotifications(in fanOutInput) {
 				Preview:        preview,
 				CreatedAt:      now,
 			}
-			_ = a.store.InsertNotification(ctx, n)
+			if err := a.store.InsertNotification(ctx, n); err != nil {
+				// Best-effort: a transient Mongo blip costs us one
+				// notification. Log it so it's visible in server logs
+				// without surfacing to the user.
+				_, _ = httperr.Log("notifications.insert", err)
+			}
 		}
 	}()
 }

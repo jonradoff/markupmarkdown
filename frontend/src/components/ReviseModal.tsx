@@ -5,6 +5,7 @@ import DiffView from "./DiffView";
 import ErrorBlock from "./ErrorBlock";
 import MarkdownRender from "./MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
+import { useToast } from "./Toast";
 
 interface Props {
   doc: MdDocument;
@@ -32,7 +33,14 @@ export default function ReviseModal({
   const [error, setError] = useState<APIError | null>(null);
   const [streamed, setStreamed] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  // Snapshot of `streamed` at the moment generation failed, kept across the
+  // phase switch so we can offer "Copy partial output" on the error panel.
+  const [partialAtError, setPartialAtError] = useState("");
+  // Accept-revision progress hint timer; flips to true after ~12s so the
+  // user knows it's still working and not stuck.
+  const [acceptSlow, setAcceptSlow] = useState(false);
   const streamedRef = useRef("");
+  const toast = useToast();
 
   useEffect(() => {
     if (phase !== "generating") return;
@@ -66,6 +74,9 @@ export default function ReviseModal({
         setPhase("preview");
       } catch (err) {
         if (cancelled) return;
+        // Snapshot whatever streamed in before the error so the user can
+        // copy it from the error panel.
+        setPartialAtError(streamedRef.current);
         if (err instanceof DOMException && err.name === "AbortError") {
           setError(
             new APIError(
@@ -92,6 +103,8 @@ export default function ReviseModal({
   async function accept() {
     if (!preview) return;
     setPhase("accepting");
+    setAcceptSlow(false);
+    const slowTimer = window.setTimeout(() => setAcceptSlow(true), 12000);
     try {
       const newDoc = await api.acceptRevision(doc.id, {
         content: preview.revisedContent,
@@ -105,6 +118,18 @@ export default function ReviseModal({
       if (err instanceof APIError) setError(err);
       else setError(new APIError((err as Error).message));
       setPhase("error");
+    } finally {
+      window.clearTimeout(slowTimer);
+    }
+  }
+
+  async function copyPartial() {
+    if (!partialAtError) return;
+    try {
+      await navigator.clipboard.writeText(partialAtError);
+      toast.success("Partial output copied");
+    } catch {
+      toast.error("Couldn't copy — your browser blocked clipboard access.");
     }
   }
 
@@ -165,7 +190,13 @@ export default function ReviseModal({
             />
           )}
           {phase === "accepting" && (
-            <CenteredSpinner hint="Saving the new revision…" />
+            <CenteredSpinner
+              hint={
+                acceptSlow
+                  ? "This is taking longer than usual — still working…"
+                  : "Saving the new revision…"
+              }
+            />
           )}
           {phase === "preview" && preview && (
             <PreviewPanel
@@ -178,10 +209,29 @@ export default function ReviseModal({
           {phase === "error" && error && (
             <div className="p-8 max-w-xl mx-auto w-full">
               <ErrorBlock error={error} onDismiss={onClose} />
+              {partialAtError && (
+                <div className="mt-4 border border-rule rounded p-3 bg-soft text-xs text-muted">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-medium text-ink">
+                      Partial output (
+                      {partialAtError.length.toLocaleString()} chars)
+                    </span>
+                    <button
+                      onClick={copyPartial}
+                      className="text-accent hover:underline"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  Claude streamed this much before the error. Copy it if you
+                  want to recover the partial work.
+                </div>
+              )}
               <div className="text-center mt-4">
                 <button
                   onClick={() => {
                     setError(null);
+                    setPartialAtError("");
                     setPhase("generating");
                   }}
                   className="text-sm text-accent hover:underline"

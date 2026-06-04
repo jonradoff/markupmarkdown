@@ -147,6 +147,9 @@ export default function CommentCard({
       await onReply(replyBody.trim());
       setReplyBody("");
       setReplyOpen(false);
+    } catch {
+      // Toast surfaced by the page handler; keep the composer open and the
+      // draft intact so the user can retry without retyping.
     } finally {
       setBusy(false);
     }
@@ -162,6 +165,9 @@ export default function CommentCard({
     try {
       await onEdit(editBody.trim());
       setEditing(false);
+    } catch {
+      // Keep the editor open with the user's text; the page-level handler
+      // surfaced the toast.
     } finally {
       setBusy(false);
     }
@@ -388,6 +394,8 @@ function ReplyRow({
     try {
       await onEdit(body.trim());
       setEditing(false);
+    } catch {
+      // Toast on the page; preserve the draft.
     } finally {
       setBusy(false);
     }

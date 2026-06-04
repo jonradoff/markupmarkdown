@@ -22,6 +22,11 @@ export default function NewCommentComposer({
     setBusy(true);
     try {
       await onSubmit(body.trim());
+      // success path: parent unmounts the composer; we don't need to
+      // clear the draft because we'll be torn down.
+    } catch {
+      // onSubmit already showed a toast; keep the draft so the user can
+      // retry without retyping. Don't dismiss the composer.
     } finally {
       setBusy(false);
     }

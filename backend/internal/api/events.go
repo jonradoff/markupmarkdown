@@ -54,10 +54,11 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case event, ok := <-sub.Events():
-			if !ok {
-				return
-			}
+		case <-sub.Done():
+			// Defensive: we own the Unsubscribe on this goroutine, so we
+			// shouldn't see this fire in practice. Still cheap to handle.
+			return
+		case event := <-sub.Events():
 			fmt.Fprintf(w, "event: %s\ndata: %d\n\n", event, time.Now().UnixMilli())
 			flusher.Flush()
 		case <-heartbeat.C:

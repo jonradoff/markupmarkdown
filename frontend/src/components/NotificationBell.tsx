@@ -61,13 +61,16 @@ export default function NotificationBell() {
     if (!n.readAt) {
       try {
         await api.markNotificationRead(n.id);
-      } catch {}
-      setUnread((u) => Math.max(0, u - 1));
-      setNotifications((list) =>
-        list.map((x) =>
-          x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x
-        )
-      );
+        setUnread((u) => Math.max(0, u - 1));
+        setNotifications((list) =>
+          list.map((x) =>
+            x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x
+          )
+        );
+      } catch {
+        // The mark-read failed (network blip). Don't lie to the user about
+        // the count — leave it alone; the next poll will reconcile.
+      }
     }
     navigate(`/d/${n.documentId}?comment=${n.commentId}`);
   }
@@ -75,12 +78,14 @@ export default function NotificationBell() {
   async function markAllRead() {
     try {
       await api.markAllNotificationsRead();
-    } catch {}
-    setUnread(0);
-    const now = new Date().toISOString();
-    setNotifications((list) =>
-      list.map((x) => (x.readAt ? x : { ...x, readAt: now }))
-    );
+      setUnread(0);
+      const now = new Date().toISOString();
+      setNotifications((list) =>
+        list.map((x) => (x.readAt ? x : { ...x, readAt: now }))
+      );
+    } catch {
+      // Failed — leave state alone; next poll reconciles.
+    }
   }
 
   return (

@@ -89,6 +89,11 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
+	// Read-only tokens cannot mint new documents (and thus cannot burn the
+	// owner's URL-ingest rate budget). Cookie sessions always satisfy this.
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 	if !a.enforceRate(w, r, a.rlCreateDoc, "Too many documents created in a short window. Try again in a minute.") {
 		return
 	}
@@ -340,6 +345,10 @@ func (a *API) restoreDocument(w http.ResponseWriter, r *http.Request) {
 	user := a.currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	// Restoring is the inverse of delete — same admin scope requirement.
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
 		return
 	}
 	doc, err := a.store.GetDeletedDocument(r.Context(), id)

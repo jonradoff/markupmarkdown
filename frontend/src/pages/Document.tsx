@@ -22,6 +22,8 @@ import APIKeyModal from "../components/APIKeyModal";
 import ReviseModal from "../components/ReviseModal";
 import ShareModal from "../components/ShareModal";
 import { useDialog } from "../components/Dialogs";
+import { useToast, toastMessageFor } from "../components/Toast";
+import { useSessionReadIds } from "../utils/sessionReadIds";
 import { formatRelative } from "../utils/format";
 import { downloadAsMarkdown } from "../utils/download";
 
@@ -32,6 +34,7 @@ export default function DocumentPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showSignIn, setShowSignIn] = useState(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
@@ -44,21 +47,18 @@ export default function DocumentPage() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [error, setError] = useState<APIError | null>(null);
   const [activeId, setActiveIdRaw] = useState<string | null>(null);
-  // Comments the user has explicitly viewed/activated this session — used
-  // to clear the unread filter immediately instead of waiting for the next
-  // page load (where previouslyViewedAt finally bumps).
-  const [sessionReadIds, setSessionReadIds] = useState<Set<string>>(() => new Set());
-  const setActiveId = useCallback((id: string | null) => {
-    setActiveIdRaw(id);
-    if (id) {
-      setSessionReadIds((prev) => {
-        if (prev.has(id)) return prev;
-        const next = new Set(prev);
-        next.add(id);
-        return next;
-      });
-    }
-  }, []);
+  // Comments the viewer has activated, persisted in sessionStorage so
+  // navigating away and back doesn't make recently-read comments show up
+  // as unread again.
+  const { ids: sessionReadIds, markRead: markSessionRead } =
+    useSessionReadIds(id);
+  const setActiveId = useCallback(
+    (commentId: string | null) => {
+      setActiveIdRaw(commentId);
+      if (commentId) markSessionRead(commentId);
+    },
+    [markSessionRead]
+  );
   const [filter, setFilter] = useState<Filter>("open");
 
   const [selection, setSelection] = useState<{
@@ -102,12 +102,20 @@ export default function DocumentPage() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    // Reset realtime bookkeeping for the new doc.
+    refreshSeqRef.current = 0;
+    lastAppliedSeqRef.current = 0;
+    setError(null);
+    setDoc(null);
+    setComments([]);
     (async () => {
       try {
         const d = await api.getDocument(id);
         if (cancelled) return;
         const cs = await api.listComments(id);
         if (cancelled) return;
+        lastAppliedSeqRef.current = 1;
+        refreshSeqRef.current = 1;
         setDoc(d);
         setComments(cs);
       } catch (err) {
@@ -225,30 +233,73 @@ export default function DocumentPage() {
       document.removeEventListener("selectionchange", handleSelectionChange);
   }, [handleSelectionChange]);
 
+  // Monotonic counter bumped on every refetch request. Lets us discard a
+  // stale list response that resolves AFTER a newer one (or after an
+  // optimistic mutation has already updated state). Tracks request order;
+  // values don't escape this component.
+  const refreshSeqRef = useRef(0);
+  const lastAppliedSeqRef = useRef(0);
+  const refreshTimerRef = useRef<number | null>(null);
+
   const refreshComments = useCallback(async () => {
     if (!id) return;
+    const seq = ++refreshSeqRef.current;
     try {
       const cs = await api.listComments(id);
+      // Drop the response if a newer refresh has already landed or if the
+      // doc/id changed mid-flight.
+      if (seq < lastAppliedSeqRef.current) return;
+      lastAppliedSeqRef.current = seq;
       setComments(cs);
     } catch {
-      // ignore — most likely the doc was deleted out from under us
+      // Network blip or the doc was deleted out from under us. Don't toast
+      // — SSE will fire `comments-updated` again on the next mutation and
+      // recover. We only complain when a user-initiated action fails.
     }
   }, [id]);
 
+  // Coalesce a burst of broadcasts into one fetch, so a flurry of agent
+  // writes doesn't pummel the server. Trailing-edge debounce — first event
+  // schedules the fetch; subsequent events extend the window slightly.
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      refreshComments();
+    }, 150);
+  }, [refreshComments]);
+
   // Realtime: subscribe to server-sent events for this doc and refetch
-  // the comments list on any change. EventSource auto-reconnects on drop.
+  // the comments list on any change. EventSource auto-reconnects on drop;
+  // we also force a refresh on every connect so we catch up on anything
+  // missed during the gap.
   useEffect(() => {
     if (!id) return;
     const es = new EventSource(`/api/documents/${id}/events`, {
       withCredentials: true,
     });
-    const onUpdate = () => refreshComments();
+    const onUpdate = () => scheduleRefresh();
+    const onOpen = () => {
+      // Fires on initial connect AND on auto-reconnect after a drop.
+      // Refetching here recovers any broadcasts we missed during the gap.
+      scheduleRefresh();
+    };
+    const onHello = () => scheduleRefresh(); // belt-and-suspenders
     es.addEventListener("comments-updated", onUpdate);
+    es.addEventListener("hello", onHello);
+    es.onopen = onOpen;
     return () => {
       es.removeEventListener("comments-updated", onUpdate);
+      es.removeEventListener("hello", onHello);
       es.close();
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
     };
-  }, [id, refreshComments]);
+  }, [id, scheduleRefresh]);
 
   function withIdentity(fn: () => void) {
     if (user || getAuthor()) {
@@ -259,19 +310,51 @@ export default function DocumentPage() {
     setShowSignIn(true);
   }
 
+  // applyMutation runs an updater on the comments list AND advances the
+  // refresh seq so any list fetch already in flight can't overwrite us
+  // with a stale snapshot.
+  const applyMutation = useCallback(
+    (fn: (prev: Comment[]) => Comment[]) => {
+      lastAppliedSeqRef.current = refreshSeqRef.current + 1;
+      setComments(fn);
+    },
+    []
+  );
+
+  // Translate an APIError into a user-friendly toast message. Keeps the
+  // top-of-page error UI reserved for "can't load the doc at all" cases.
+  const toastError = useCallback(
+    (err: unknown, fallback: string) => {
+      if (err instanceof APIError) {
+        toast.error(err.message || fallback);
+      } else {
+        toast.error(toastMessageFor(err) || fallback);
+      }
+    },
+    [toast]
+  );
+
   async function submitNewComment(body: string) {
     if (!id || !composer) return;
     const author = user?.name || user?.login || getAuthor() || "Anonymous";
-    const c = await api.createComment(id, {
-      anchor: composer.anchor,
-      body,
-      author,
-    });
-    setComposer(null);
-    setComments((prev) => [...prev, c]);
-    setActiveId(c.id);
-    window.getSelection()?.removeAllRanges();
-    setSelection(null);
+    try {
+      const c = await api.createComment(id, {
+        anchor: composer.anchor,
+        body,
+        author,
+      });
+      setComposer(null);
+      applyMutation((prev) => [...prev, c]);
+      setActiveId(c.id);
+      window.getSelection()?.removeAllRanges();
+      setSelection(null);
+    } catch (err) {
+      toastError(err, "Couldn't post that comment.");
+      // Keep the composer open with the user's text so they can retry.
+      // Re-throw so NewCommentComposer's `busy` state clears via its
+      // try/catch and the user can edit + retry.
+      throw err;
+    }
   }
 
   function openComposerForSelection() {
@@ -288,34 +371,65 @@ export default function DocumentPage() {
 
   async function handleResolve(c: Comment) {
     const author = user?.name || user?.login || getAuthor() || "Anonymous";
-    const updated = await api.resolveComment(c.id, author);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.resolveComment(c.id, author);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't mark that comment done.");
+    }
   }
   async function handleReopen(c: Comment) {
-    const updated = await api.reopenComment(c.id);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.reopenComment(c.id);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't reopen that comment.");
+    }
   }
   async function handleReply(c: Comment, body: string) {
     const author = user?.name || user?.login || getAuthor() || "Anonymous";
-    const updated = await api.createReply(c.id, body, author);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.createReply(c.id, body, author);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't post that reply.");
+      throw err; // bubble so CommentCard keeps the draft + clears `busy`
+    }
   }
   async function handleEdit(c: Comment, body: string) {
-    const updated = await api.editComment(c.id, body);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.editComment(c.id, body);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't save that edit.");
+      throw err;
+    }
   }
   async function handleDelete(c: Comment) {
-    await api.deleteComment(c.id);
-    setComments((prev) => prev.filter((x) => x.id !== c.id));
-    if (activeId === c.id) setActiveId(null);
+    try {
+      await api.deleteComment(c.id);
+      applyMutation((prev) => prev.filter((x) => x.id !== c.id));
+      if (activeId === c.id) setActiveId(null);
+    } catch (err) {
+      toastError(err, "Couldn't delete that comment.");
+    }
   }
   async function handleEditReply(c: Comment, replyId: string, body: string) {
-    const updated = await api.editReply(c.id, replyId, body);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.editReply(c.id, replyId, body);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't save that edit.");
+      throw err;
+    }
   }
   async function handleDeleteReply(c: Comment, replyId: string) {
-    const updated = await api.deleteReply(c.id, replyId);
-    setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    try {
+      const updated = await api.deleteReply(c.id, replyId);
+      applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't delete that reply.");
+    }
   }
 
   // A comment counts as "unread" when it's newer than the user's previous
@@ -448,8 +562,12 @@ export default function DocumentPage() {
       confirmLabel: "Rename",
     });
     if (next && next.trim() && next !== doc.title) {
-      const updated = await api.renameDocument(doc.id, next.trim());
-      setDoc(updated);
+      try {
+        const updated = await api.renameDocument(doc.id, next.trim());
+        setDoc(updated);
+      } catch (err) {
+        toastError(err, "Couldn't rename the document.");
+      }
     }
   }
 
@@ -457,13 +575,17 @@ export default function DocumentPage() {
     if (!doc) return;
     const ok = await dialog.confirm({
       title: "Delete document?",
-      body: `Delete "${doc.title}" and all its comments? This cannot be undone.`,
+      body: `Delete "${doc.title}" and all its comments? You can restore it from Trash for 30 days.`,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    await api.deleteDocument(doc.id);
-    navigate("/");
+    try {
+      await api.deleteDocument(doc.id);
+      navigate("/");
+    } catch (err) {
+      toastError(err, "Couldn't delete the document.");
+    }
   }
 
   // Render NOTHING of the doc when access is denied. Private docs that the
