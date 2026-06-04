@@ -197,6 +197,11 @@ type Reply struct {
 	OwnerLogin string `bson:"-" json:"ownerLogin,omitempty"`
 	Body            string    `bson:"body" json:"body"`
 	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"`
+	// Mine is computed at read time: true when the viewer is the human
+	// behind this reply — either as the direct author or as the owner of
+	// the bot/token that wrote it. Drives the edit/delete affordances in
+	// the UI; never persisted.
+	Mine            bool      `bson:"-" json:"mine,omitempty"`
 	CreatedAt       time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt       time.Time `bson:"updated_at" json:"updatedAt"`
 }
@@ -218,6 +223,8 @@ type Comment struct {
 	ResolvedBy string    `bson:"resolved_by,omitempty" json:"resolvedBy,omitempty"`
 	ResolvedAt *time.Time `bson:"resolved_at,omitempty" json:"resolvedAt,omitempty"`
 	Replies    []Reply   `bson:"replies" json:"replies"`
+	// Mine is computed at read time. See Reply.Mine for semantics.
+	Mine       bool      `bson:"-" json:"mine,omitempty"`
 	CreatedAt  time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt  time.Time `bson:"updated_at" json:"updatedAt"`
 }

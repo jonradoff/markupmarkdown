@@ -134,6 +134,9 @@ export interface Reply {
   ownerLogin?: string;
   body: string;
   bodyHtml?: string;
+  /** Set by the backend when the viewer is the human behind this reply
+   * (direct author or owner of the bot/token that wrote it). */
+  mine?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -173,6 +176,9 @@ export interface Comment {
   ownerLogin?: string;
   body: string;
   bodyHtml?: string;
+  /** Set by the backend when the viewer is the human behind this comment
+   * (direct author or owner of the bot/token that wrote it). */
+  mine?: boolean;
   resolved: boolean;
   resolvedBy?: string;
   resolvedAt?: string;

@@ -132,8 +132,12 @@ export default function CommentCard({
     if (!editing) setEditBody(comment.body);
   }, [comment.body, editing]);
 
+  // Backend stamps `mine` whenever the viewer is the human behind the
+  // comment — either the direct human author or the owner of the bot/token
+  // that wrote it. Falls back to a name match for anonymous (no-session)
+  // viewers, since `mine` is only computed when there's an identified user.
   const isMine = user
-    ? comment.author === user.name || comment.author === user.login
+    ? Boolean(comment.mine)
     : comment.author === getAuthor();
 
   async function handleReply() {
@@ -253,7 +257,7 @@ export default function CommentCard({
             <ReplyRow
               key={r.id}
               reply={r}
-              mine={user ? r.author === user.name || r.author === user.login : r.author === me}
+              mine={user ? Boolean(r.mine) : r.author === me}
               onEdit={(body) => onEditReply(r.id, body)}
               onDelete={() => onDeleteReply(r.id)}
             />

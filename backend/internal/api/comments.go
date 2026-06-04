@@ -60,6 +60,76 @@ func stampAgentWriteReply(r *models.Reply, tokenID, label string) {
 	r.AuthorAvatarURL = ""
 }
 
+// requireMineComment writes 403 and returns false unless the calling viewer
+// is the human behind the comment — either the direct human author or the
+// owner of the bot/token that wrote it. AuthorID on agent comments points
+// at the token's owning user, so equality covers both.
+//
+// Used by edit/delete handlers. Doc access has already been checked; this
+// is the per-row ownership layer on top.
+func (a *API) requireMineComment(w http.ResponseWriter, r *http.Request, c *models.Comment) bool {
+	if c == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return false
+	}
+	vid := a.viewerID(r)
+	if vid == "" || vid != c.AuthorID {
+		writeError(w, http.StatusForbidden, "you can only edit or delete comments you (or a bot you own) created")
+		return false
+	}
+	return true
+}
+
+// requireMineReply mirrors requireMineComment for a reply nested in a parent
+// comment.
+func (a *API) requireMineReply(w http.ResponseWriter, r *http.Request, parent *models.Comment, replyID string) bool {
+	if parent == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return false
+	}
+	vid := a.viewerID(r)
+	if vid == "" {
+		writeError(w, http.StatusForbidden, "you can only edit or delete replies you (or a bot you own) created")
+		return false
+	}
+	for i := range parent.Replies {
+		if parent.Replies[i].ID == replyID {
+			if parent.Replies[i].AuthorID != vid {
+				writeError(w, http.StatusForbidden, "you can only edit or delete replies you (or a bot you own) created")
+				return false
+			}
+			return true
+		}
+	}
+	writeError(w, http.StatusNotFound, "reply not found")
+	return false
+}
+
+// markMine stamps Comment.Mine / Reply.Mine based on viewerID. A comment is
+// "mine" when the viewer is the human behind it — author for human-written
+// content, token owner for agent content. AuthorID on agent comments points
+// at the token's owning user (stamped in mcpapi.go's CreateComment), so the
+// same equality check covers both cases.
+func markMine(comments []models.Comment, viewerID string) {
+	if viewerID == "" {
+		return
+	}
+	for i := range comments {
+		comments[i].Mine = comments[i].AuthorID == viewerID
+		for j := range comments[i].Replies {
+			comments[i].Replies[j].Mine = comments[i].Replies[j].AuthorID == viewerID
+		}
+	}
+}
+
+// viewerID returns the calling user's ID, or "" if anonymous.
+func (a *API) viewerID(r *http.Request) string {
+	if u := a.currentUser(r); u != nil {
+		return u.ID
+	}
+	return ""
+}
+
 // resolveAgentIdentities overlays the display fields on agent-authored
 // comments and replies from the current token + user records. Called by
 // every read path that returns comments to the client.
@@ -112,6 +182,24 @@ func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comm
 				&comments[i].Replies[j].Author, &comments[i].Replies[j].OwnerName, &comments[i].Replies[j].OwnerLogin)
 			comments[i].Replies[j].AuthorAvatarURL = ""
 		}
+	}
+}
+
+// decorate applies the standard read-time enrichment to a single comment
+// destined for an HTTP response: agent display fields + Mine ownership flag.
+// Use this everywhere a write handler returns a comment object.
+func (a *API) decorate(r *http.Request, c *models.Comment) {
+	a.resolveAgentIdentity(r.Context(), c)
+	if c == nil {
+		return
+	}
+	vid := a.viewerID(r)
+	if vid == "" {
+		return
+	}
+	c.Mine = c.AuthorID == vid
+	for i := range c.Replies {
+		c.Replies[i].Mine = c.Replies[i].AuthorID == vid
 	}
 }
 
@@ -211,6 +299,7 @@ func (a *API) listComments(w http.ResponseWriter, r *http.Request) {
 		comments = []models.Comment{}
 	}
 	a.resolveAgentIdentities(r.Context(), comments)
+	markMine(comments, a.viewerID(r))
 	// Opt-in HTML rendering of bodies for agents / integrators that want
 	// pre-rendered output. Default is markdown source (machine-readable).
 	if r.URL.Query().Get("render") == "html" {
@@ -288,17 +377,21 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		Comment:  c,
 		Actor:    a.currentUser(r),
 	})
-	a.resolveAgentIdentity(r.Context(), c)
+	a.decorate(r, c)
 	writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	if _, _, accErr := a.checkCommentAccess(r, id); accErr != nil {
+	existing, _, accErr := a.checkCommentAccess(r, id)
+	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
 	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
+	if !a.requireMineComment(w, r, existing) {
 		return
 	}
 	capBody(w, r, maxBodyComment)
@@ -330,7 +423,7 @@ func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
+	a.decorate(r, c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) deleteComment(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +433,14 @@ func (a *API) deleteComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+	// Author-only delete. A token's scope no longer matters here — even an
+	// admin-scope token can't delete a comment authored by a different user
+	// (or by a bot owned by a different user). Cookie session + admin scope
+	// still satisfy the path when the comment is theirs.
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
+	if !a.requireMineComment(w, r, existing) {
 		return
 	}
 	if err := a.store.DeleteComment(r.Context(), id); err != nil {
@@ -379,7 +479,7 @@ func (a *API) resolveComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
+	a.decorate(r, c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +505,7 @@ func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
+	a.decorate(r, c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
@@ -467,18 +567,22 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		ReplyOf:  parentComment,
 		Actor:    a.currentUser(r),
 	})
-	a.resolveAgentIdentity(r.Context(), c)
+	a.decorate(r, c)
 	writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 	commentID := mux.Vars(r)["id"]
 	replyID := mux.Vars(r)["replyId"]
-	if _, _, accErr := a.checkCommentAccess(r, commentID); accErr != nil {
+	parent, _, accErr := a.checkCommentAccess(r, commentID)
+	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
 	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
+	if !a.requireMineReply(w, r, parent, replyID) {
 		return
 	}
 	capBody(w, r, maxBodyComment)
@@ -502,18 +606,22 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c)
+	a.decorate(r, c)
 	writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
 	commentID := mux.Vars(r)["id"]
 	replyID := mux.Vars(r)["replyId"]
-	if _, _, accErr := a.checkCommentAccess(r, commentID); accErr != nil {
+	parent, _, accErr := a.checkCommentAccess(r, commentID)
+	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
+	if !a.requireMineReply(w, r, parent, replyID) {
 		return
 	}
 	c, err := a.store.DeleteReply(r.Context(), commentID, replyID)
@@ -526,5 +634,5 @@ func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
+	a.decorate(r, c); writeJSON(w, http.StatusOK, c)
 }
