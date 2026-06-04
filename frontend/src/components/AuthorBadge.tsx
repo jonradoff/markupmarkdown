@@ -4,6 +4,7 @@ import { colorFor, initials } from "../utils/format";
 import { useAuth } from "../auth";
 import SignInModal from "./SignInModal";
 import APIKeyModal from "./APIKeyModal";
+import TokensModal from "./TokensModal";
 
 export default function AuthorBadge() {
   const { user, githubEnabled, logout, loginURL, manageGitHubURL } = useAuth();
@@ -11,6 +12,7 @@ export default function AuthorBadge() {
   const [open, setOpen] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showAPIKey, setShowAPIKey] = useState(false);
+  const [showTokens, setShowTokens] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -100,6 +102,16 @@ export default function AuthorBadge() {
                 Anthropic API key
               </button>
               <button
+                onClick={() => {
+                  setOpen(false);
+                  setShowTokens(true);
+                }}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-soft"
+                title="Personal access tokens for the REST and MCP APIs"
+              >
+                Personal access tokens
+              </button>
+              <button
                 onClick={handleLogout}
                 className="w-full text-left px-3 py-2 text-sm hover:bg-soft"
               >
@@ -152,6 +164,10 @@ export default function AuthorBadge() {
 
       {showAPIKey && (
         <APIKeyModal onClose={() => setShowAPIKey(false)} />
+      )}
+
+      {showTokens && (
+        <TokensModal onClose={() => setShowTokens(false)} />
       )}
     </div>
   );

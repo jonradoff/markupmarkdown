@@ -152,6 +152,7 @@ export default function DocumentPage() {
         id: c.id,
         start: c.anchor.start,
         end: c.anchor.end,
+        exact: c.anchor.exact,
         resolved: c.resolved,
         active: c.id === activeId,
       }));

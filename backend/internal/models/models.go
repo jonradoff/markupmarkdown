@@ -100,6 +100,22 @@ type Notification struct {
 	ReadAt         *time.Time       `bson:"read_at,omitempty" json:"readAt,omitempty"`
 }
 
+// APIToken is a per-user Personal Access Token. Used to authenticate REST
+// and MCP calls from agents or scripts that can't carry the session cookie.
+//
+// We store only SHA-256(token), never the plaintext.
+type APIToken struct {
+	ID         string     `bson:"_id" json:"id"`
+	UserID     string     `bson:"user_id" json:"-"`
+	Hash       string     `bson:"hash" json:"-"`
+	Prefix     string     `bson:"prefix" json:"prefix"` // first 12 chars of token (e.g. "mmk_a3f7c2…")
+	Label      string     `bson:"label" json:"label"`
+	IsAgent    bool       `bson:"is_agent" json:"isAgent"`
+	CreatedAt  time.Time  `bson:"created_at" json:"createdAt"`
+	LastUsedAt *time.Time `bson:"last_used_at,omitempty" json:"lastUsedAt,omitempty"`
+	RevokedAt  *time.Time `bson:"revoked_at,omitempty" json:"-"`
+}
+
 type UserSecrets struct {
 	UserID                 string    `bson:"_id" json:"-"`
 	AnthropicKeyCiphertext string    `bson:"anthropic_key_ciphertext,omitempty" json:"-"`
@@ -116,24 +132,39 @@ type Anchor struct {
 	Suffix string `bson:"suffix,omitempty" json:"suffix,omitempty"`
 }
 
+// ActorKind distinguishes human-authored from agent-authored content. We
+// stamp it at write time from the auth source (Bearer token marked is_agent
+// vs cookie session). UI uses this to surface a bot badge so humans can
+// instantly tell who's who in a thread.
+type ActorKind string
+
+const (
+	ActorHuman ActorKind = "human"
+	ActorAgent ActorKind = "agent"
+)
+
 type Reply struct {
 	ID              string    `bson:"id" json:"id"`
 	Author          string    `bson:"author" json:"author"`
 	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
 	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
+	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
 	Body            string    `bson:"body" json:"body"`
+	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"`
 	CreatedAt       time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt       time.Time `bson:"updated_at" json:"updatedAt"`
 }
 
 type Comment struct {
-	ID              string `bson:"_id" json:"id"`
-	DocumentID      string `bson:"document_id" json:"documentId"`
-	Anchor          Anchor `bson:"anchor" json:"anchor"`
-	Author          string `bson:"author" json:"author"`
-	AuthorID        string `bson:"author_id,omitempty" json:"-"`
-	AuthorAvatarURL string `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
-	Body            string `bson:"body" json:"body"`
+	ID              string    `bson:"_id" json:"id"`
+	DocumentID      string    `bson:"document_id" json:"documentId"`
+	Anchor          Anchor    `bson:"anchor" json:"anchor"`
+	Author          string    `bson:"author" json:"author"`
+	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
+	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
+	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
+	Body            string    `bson:"body" json:"body"`
+	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"` // populated only when render=html requested
 	Resolved   bool      `bson:"resolved" json:"resolved"`
 	ResolvedBy string    `bson:"resolved_by,omitempty" json:"resolvedBy,omitempty"`
 	ResolvedAt *time.Time `bson:"resolved_at,omitempty" json:"resolvedAt,omitempty"`

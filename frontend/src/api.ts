@@ -1,9 +1,11 @@
 import type {
   Anchor,
   AnthropicKeyStatus,
+  APIToken,
   AuthConfig,
   AuthUser,
   Comment,
+  CreatedTokenResponse,
   DocumentSummary,
   MdDocument,
   MentionCandidate,
@@ -243,4 +245,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  listTokens: () => req<APIToken[]>("/api/me/tokens"),
+  createToken: (label: string, isAgent: boolean) =>
+    req<CreatedTokenResponse>("/api/me/tokens", {
+      method: "POST",
+      body: JSON.stringify({ label, isAgent }),
+    }),
+  revokeToken: (id: string) =>
+    req<void>(`/api/me/tokens/${id}`, { method: "DELETE" }),
 };

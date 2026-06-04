@@ -13,6 +13,10 @@ export interface HighlightRange {
   end: number;
   resolved: boolean;
   active: boolean;
+  // For agent-created comments anchored by text-substring rather than by
+  // character offsets. When start == end == 0 and exact is set, the
+  // renderer resolves it against the live textContent.
+  exact?: string;
 }
 
 function getTextOffset(
@@ -86,12 +90,40 @@ export function applyHighlights(
 ) {
   unwrapHighlights(container);
 
-  const sorted = [...ranges].sort(
-    (a, b) => a.start - b.start || a.end - b.end
+  // Resolve agent-style anchors (start == end == 0 with non-empty exact) by
+  // finding the substring in the current textContent.
+  const resolved = ranges.map((r) =>
+    r.start === 0 && r.end === 0 && r.exact
+      ? resolveTextAnchor(container, r)
+      : r
   );
+
+  const sorted = resolved
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
   for (const r of sorted) {
     wrapRange(container, r);
   }
+}
+
+// resolveTextAnchor walks the container's textContent and returns the first
+// occurrence of r.exact, mapping it back to a [start, end] character range.
+// Used for comments created by agents via MCP (text-substring anchoring).
+function resolveTextAnchor(
+  container: HTMLElement,
+  r: HighlightRange
+): HighlightRange {
+  const needle = r.exact ?? "";
+  if (!needle) return r;
+  let combined = "";
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let cur: Node | null;
+  while ((cur = walker.nextNode())) {
+    combined += cur.textContent ?? "";
+  }
+  const idx = combined.indexOf(needle);
+  if (idx < 0) return { ...r, start: 0, end: 0 };
+  return { ...r, start: idx, end: idx + needle.length };
 }
 
 function wrapRange(container: HTMLElement, range: HighlightRange) {

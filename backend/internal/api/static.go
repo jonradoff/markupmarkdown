@@ -10,6 +10,11 @@ import (
 	"markupmarkdown/internal/store"
 )
 
+// SkillMD is the raw markdown body of skills/markupmarkdown/SKILL.md, embedded
+// at build time. Served verbatim at /skill.md so agents can fetch the
+// canonical guide over a stable URL.
+var SkillMD = ""
+
 // SPAHandler serves static files from staticDir and falls back to index.html
 // for any path that doesn't match a real file (so client-side routing works).
 // Special-cases /d/:id to inject Open Graph + <title> meta into the served
@@ -22,9 +27,17 @@ type SPAHandler struct {
 }
 
 func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Never swallow API routes.
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	// Never swallow API or MCP routes.
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/mcp") {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Canonical SKILL.md for agents — served as plain markdown.
+	if r.URL.Path == "/skill.md" {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = w.Write([]byte(SkillMD))
 		return
 	}
 

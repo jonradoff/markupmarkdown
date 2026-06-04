@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +25,29 @@ const (
 // userKey is the request context key for the authenticated user.
 type userKey struct{}
 
+// tokenInfoKey carries the API token used (if any) so write handlers can
+// stamp comments with actor_kind="agent" when the token says so.
+type tokenInfoKey struct{}
+
+type tokenInfo struct {
+	TokenID string
+	IsAgent bool
+}
+
+func authTokenFromHeader(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(h[7:])
+}
+
+// HashToken returns the SHA-256 hex digest of t. Exported for the MCP server.
+func HashToken(t string) string {
+	sum := sha256.Sum256([]byte(t))
+	return hex.EncodeToString(sum[:])
+}
+
 func (a *API) gh() *auth.GitHubClient {
 	return &auth.GitHubClient{
 		ClientID:     a.cfg.GitHub.ClientID,
@@ -31,7 +57,17 @@ func (a *API) gh() *auth.GitHubClient {
 	}
 }
 
+// currentUser resolves the request's identity. Bearer token wins over session
+// cookie when both are present so a script with a token attached doesn't
+// silently fall back to the browser's logged-in user.
 func (a *API) currentUser(r *http.Request) *models.User {
+	if tok := authTokenFromHeader(r); tok != "" {
+		if u := a.userFromToken(r, tok); u != nil {
+			return u
+		}
+		// Bad bearer is an explicit reject, not a fall-through to cookies.
+		return nil
+	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
 		return nil
@@ -45,6 +81,45 @@ func (a *API) currentUser(r *http.Request) *models.User {
 		return nil
 	}
 	return u
+}
+
+// userFromToken looks up the user behind a Bearer token. Side-effects:
+// stashes token metadata on the request context (used to stamp agent badges)
+// and bumps last_used_at asynchronously.
+func (a *API) userFromToken(r *http.Request, tok string) *models.User {
+	if !strings.HasPrefix(tok, "mmk_") || len(tok) < 32 {
+		return nil
+	}
+	rec, err := a.store.GetAPITokenByHash(r.Context(), HashToken(tok))
+	if err != nil || rec == nil {
+		return nil
+	}
+	u, err := a.store.GetUser(r.Context(), rec.UserID)
+	if err != nil || u == nil {
+		return nil
+	}
+	// Stash token info on the request so write handlers can mark agent.
+	*r = *r.WithContext(contextWithTokenInfo(r.Context(), tokenInfo{TokenID: rec.ID, IsAgent: rec.IsAgent}))
+	// Touch last-used in the background; never block the request on it.
+	go a.store.TouchAPIToken(contextDetached(), rec.ID)
+	return u
+}
+
+func contextWithTokenInfo(parent context.Context, info tokenInfo) context.Context {
+	return context.WithValue(parent, tokenInfoKey{}, info)
+}
+
+func tokenInfoFromRequest(r *http.Request) (tokenInfo, bool) {
+	v, ok := r.Context().Value(tokenInfoKey{}).(tokenInfo)
+	return v, ok
+}
+
+// contextDetached returns a fresh background context for fire-and-forget work
+// that shouldn't be cancelled when the request goroutine ends.
+func contextDetached() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = cancel // we deliberately leak — the timeout is the lifetime guard
+	return ctx
 }
 
 func (a *API) authConfig(w http.ResponseWriter, _ *http.Request) {

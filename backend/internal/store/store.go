@@ -47,6 +47,7 @@ func (s *Store) AuthStates() *mongo.Collection     { return s.db.Collection("aut
 func (s *Store) UserSecrets() *mongo.Collection    { return s.db.Collection("user_secrets") }
 func (s *Store) DocumentViews() *mongo.Collection  { return s.db.Collection("document_views") }
 func (s *Store) Notifications() *mongo.Collection  { return s.db.Collection("notifications") }
+func (s *Store) APITokens() *mongo.Collection      { return s.db.Collection("api_tokens") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -82,6 +83,65 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Users().Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "login", Value: 1}}},
 	})
+	_, _ = s.APITokens().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "hash", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}},
+	})
+}
+
+// API tokens
+
+func (s *Store) InsertAPIToken(ctx context.Context, t *models.APIToken) error {
+	_, err := s.APITokens().InsertOne(ctx, t)
+	return err
+}
+
+func (s *Store) GetAPITokenByHash(ctx context.Context, hash string) (*models.APIToken, error) {
+	var t models.APIToken
+	err := s.APITokens().FindOne(ctx, bson.M{
+		"hash":       hash,
+		"revoked_at": bson.M{"$exists": false},
+	}).Decode(&t)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (s *Store) ListAPITokensForUser(ctx context.Context, userID string) ([]models.APIToken, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	cur, err := s.APITokens().Find(ctx, bson.M{
+		"user_id":    userID,
+		"revoked_at": bson.M{"$exists": false},
+	}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.APIToken
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) RevokeAPIToken(ctx context.Context, userID, id string) error {
+	_, err := s.APITokens().UpdateOne(ctx,
+		bson.M{"_id": id, "user_id": userID},
+		bson.M{"$set": bson.M{"revoked_at": time.Now().UTC()}},
+	)
+	return err
+}
+
+func (s *Store) TouchAPIToken(ctx context.Context, id string) {
+	now := time.Now().UTC()
+	_, _ = s.APITokens().UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{"$set": bson.M{"last_used_at": now}},
+	)
 }
 
 // Notifications

@@ -16,6 +16,7 @@ import (
 
 	"markupmarkdown/internal/api"
 	"markupmarkdown/internal/config"
+	"markupmarkdown/internal/mcpserver"
 	"markupmarkdown/internal/store"
 )
 
@@ -77,6 +78,10 @@ func main() {
 	}
 	a.Register(r)
 	a.StartPurgeSweep()
+
+	// MCP server for agents: streamable HTTP transport, Bearer-token auth.
+	mcpHandler := mcpserver.New(a, st, cfg.Frontend.URL)
+	r.PathPrefix("/mcp").Handler(mcpHandler)
 
 	// In prod, serve the built frontend from the same origin (catch-all).
 	if cfg.Frontend.StaticDir != "" {

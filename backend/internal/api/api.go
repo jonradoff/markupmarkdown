@@ -80,6 +80,10 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/me/notifications", a.listNotifications).Methods("GET")
 	r.HandleFunc("/api/me/notifications/read", a.markAllNotificationsRead).Methods("POST")
 	r.HandleFunc("/api/me/notifications/{id}/read", a.markNotificationRead).Methods("POST")
+
+	r.HandleFunc("/api/me/tokens", a.listTokens).Methods("GET")
+	r.HandleFunc("/api/me/tokens", a.createToken).Methods("POST")
+	r.HandleFunc("/api/me/tokens/{id}", a.revokeToken).Methods("DELETE")
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {

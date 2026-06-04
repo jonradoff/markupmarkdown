@@ -22,23 +22,46 @@ interface Props {
   requireIdentity: (next: () => void) => void;
 }
 
-function Avatar({ name, url }: { name: string; url?: string }) {
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt=""
-        className="w-7 h-7 shrink-0 rounded-full bg-soft"
-        loading="lazy"
-      />
-    );
-  }
-  return (
+function Avatar({
+  name,
+  url,
+  isAgent,
+}: {
+  name: string;
+  url?: string;
+  isAgent?: boolean;
+}) {
+  const inner = url ? (
+    <img
+      src={url}
+      alt=""
+      className="w-7 h-7 rounded-full bg-soft"
+      loading="lazy"
+    />
+  ) : (
     <span
-      className="w-7 h-7 shrink-0 rounded-full text-white text-xs flex items-center justify-center font-medium"
+      className="w-7 h-7 rounded-full text-white text-xs flex items-center justify-center font-medium"
       style={{ background: colorFor(name) }}
     >
       {initials(name)}
+    </span>
+  );
+  if (!isAgent) {
+    return <span className="shrink-0">{inner}</span>;
+  }
+  return (
+    <span className="shrink-0 relative" title="Created by an agent">
+      {inner}
+      <span
+        className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-accent text-accent-fg flex items-center justify-center"
+        aria-hidden
+      >
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="11" width="18" height="10" rx="2" />
+          <path d="M12 7v4M8 21v-3M16 21v-3M9 15h.01M15 15h.01" />
+          <path d="M12 7a2 2 0 0 0 2-2V3" />
+        </svg>
+      </span>
     </span>
   );
 }
@@ -131,7 +154,11 @@ export default function CommentCard({
 
       {/* Author row */}
       <div className="flex items-start gap-2 mb-2">
-        <Avatar name={comment.author} url={comment.authorAvatarUrl} />
+        <Avatar
+          name={comment.author}
+          url={comment.authorAvatarUrl}
+          isAgent={comment.actorKind === "agent"}
+        />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
             <div className="font-medium text-sm text-ink truncate">
@@ -318,7 +345,11 @@ function ReplyRow({
 
   return (
     <div className="flex items-start gap-2">
-      <Avatar name={reply.author} url={reply.authorAvatarUrl} />
+      <Avatar
+        name={reply.author}
+        url={reply.authorAvatarUrl}
+        isAgent={reply.actorKind === "agent"}
+      />
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between">
           <div className="text-xs font-medium text-ink">{reply.author}</div>

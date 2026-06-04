@@ -129,9 +129,25 @@ export interface Reply {
   id: string;
   author: string;
   authorAvatarUrl?: string;
+  actorKind?: "human" | "agent";
   body: string;
+  bodyHtml?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface APIToken {
+  id: string;
+  prefix: string;
+  label: string;
+  isAgent: boolean;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface CreatedTokenResponse {
+  token: string;
+  metadata: APIToken;
 }
 
 export interface Comment {
@@ -140,7 +156,9 @@ export interface Comment {
   anchor: Anchor;
   author: string;
   authorAvatarUrl?: string;
+  actorKind?: "human" | "agent";
   body: string;
+  bodyHtml?: string;
   resolved: boolean;
   resolvedBy?: string;
   resolvedAt?: string;

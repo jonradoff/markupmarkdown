@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"markupmarkdown/internal/models"
+	"markupmarkdown/internal/render"
 )
 
 type createCommentRequest struct {
@@ -32,6 +33,15 @@ type resolveRequest struct {
 }
 
 const anonymous = "Anonymous"
+
+// actorKindFor reads the auth source from the request: API token marked
+// IsAgent → agent; otherwise human.
+func actorKindFor(r *http.Request) models.ActorKind {
+	if info, ok := tokenInfoFromRequest(r); ok && info.IsAgent {
+		return models.ActorAgent
+	}
+	return models.ActorHuman
+}
 
 func authorOr(a string) string {
 	a = strings.TrimSpace(a)
@@ -67,6 +77,16 @@ func (a *API) listComments(w http.ResponseWriter, r *http.Request) {
 	}
 	if comments == nil {
 		comments = []models.Comment{}
+	}
+	// Opt-in HTML rendering of bodies for agents / integrators that want
+	// pre-rendered output. Default is markdown source (machine-readable).
+	if r.URL.Query().Get("render") == "html" {
+		for i := range comments {
+			comments[i].BodyHTML = render.HTMLComment(comments[i].Body)
+			for j := range comments[i].Replies {
+				comments[i].Replies[j].BodyHTML = render.HTMLComment(comments[i].Replies[j].Body)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, comments)
 }
@@ -124,6 +144,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 	if u := a.currentUser(r); u != nil {
 		c.AuthorID = u.ID
 		c.AuthorAvatarURL = u.AvatarURL
+		c.ActorKind = actorKindFor(r)
 	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -284,6 +305,7 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 	if u := a.currentUser(r); u != nil {
 		reply.AuthorID = u.ID
 		reply.AuthorAvatarURL = u.AvatarURL
+		reply.ActorKind = actorKindFor(r)
 	}
 	c, err := a.store.AppendReply(r.Context(), id, reply)
 	if err != nil {
