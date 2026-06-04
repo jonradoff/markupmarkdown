@@ -27,10 +27,10 @@ func docSetSourceBaseline(sha string, now time.Time) bson.M {
 }
 
 // sourceCheckTTL is how long we trust a previous drift check before
-// refreshing on doc-open. Tight enough to surface upstream pushes
-// within a window the average reviewer notices, loose enough that
-// active editing doesn't burn GitHub API quota.
-const sourceCheckTTL = 10 * time.Minute
+// refreshing on doc-open. Short enough that an upstream push is
+// noticed within a minute of the next open, long enough that opening
+// the same doc in five tabs doesn't fire five GitHub API calls.
+const sourceCheckTTL = 60 * time.Second
 
 // sourceCheckInFlight dedupes concurrent drift checks for the same doc
 // — multiple tabs opening the same doc shouldn't fire N parallel
@@ -46,36 +46,53 @@ var sourceCheckInFlight sync.Map // map[string]chan struct{}
 // stamps the current SHA as the baseline so future changes can be
 // detected (we won't surface drift on this first check — there's
 // nothing to compare against — but subsequent opens will).
-func (a *API) maybeRefreshSourceDrift(doc *models.Document) {
+//
+// If userToken is non-empty it's used for the SHA fetch so private
+// repos work; anonymous calls work for public repos.
+func (a *API) maybeRefreshSourceDrift(doc *models.Document, userToken string) {
 	if doc == nil {
 		return
 	}
-	owner, repo, ref, p, ok := deriveGitHubInfo(doc)
-	if !ok {
+	if _, _, _, _, ok := deriveGitHubInfo(doc); !ok {
 		return
 	}
 	if doc.SourceCheckedAt != nil && time.Since(*doc.SourceCheckedAt) < sourceCheckTTL {
 		return
 	}
-	docID := doc.ID
-	hadBaseline := doc.SourceSHA != ""
-	if _, loaded := sourceCheckInFlight.LoadOrStore(docID, struct{}{}); loaded {
+	a.runSourceCheck(doc, userToken, false)
+}
+
+// runSourceCheck does the actual SHA fetch + persist + broadcast. The
+// `force` flag bypasses the in-flight dedupe map so a manual "check
+// now" doesn't get swallowed by a concurrent passive check.
+func (a *API) runSourceCheck(doc *models.Document, userToken string, force bool) {
+	owner, repo, ref, p, ok := deriveGitHubInfo(doc)
+	if !ok {
 		return
 	}
+	docID := doc.ID
+	hadBaseline := doc.SourceSHA != ""
+	if !force {
+		if _, loaded := sourceCheckInFlight.LoadOrStore(docID, struct{}{}); loaded {
+			return
+		}
+	}
 	go func() {
-		defer sourceCheckInFlight.Delete(docID)
+		if !force {
+			defer sourceCheckInFlight.Delete(docID)
+		}
 		ctx, cancel := context.WithTimeout(contextDetached(), 15*time.Second)
 		defer cancel()
-		// Anonymous Contents API works for public repos. For private
-		// docs we'd need a user token, but we don't have one in this
-		// detached path — fall back: if anonymous fails, skip silently.
-		sha, err := auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
+		sha, err := auth.FetchGitHubFileSHA(ctx, userToken, owner, repo, ref, p)
+		if err != nil && userToken != "" {
+			// Token may have lost access; retry anonymously in case the
+			// file is public.
+			sha, err = auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
+		}
 		if err != nil {
 			return
 		}
 		if !hadBaseline {
-			// First check after ingest: stamp this SHA as the baseline
-			// so we have something to compare against next time.
 			now := time.Now().UTC()
 			_, _ = a.store.Documents().UpdateOne(ctx,
 				docByIDFilter(docID),
@@ -87,12 +104,29 @@ func (a *API) maybeRefreshSourceDrift(doc *models.Document) {
 			return
 		}
 		nowDrift := sha != doc.SourceSHA
-		// Broadcast doc-updated when the drift state flipped, so any
-		// open viewer sees the banner appear without a page refresh.
 		if nowDrift != prevDrift {
 			a.hub.Broadcast(docID, "doc-updated")
 		}
 	}()
+}
+
+// checkSourceNow is the handler for POST /api/documents/:id/check-source
+// — bypasses the TTL so users can manually re-check. Returns the current
+// (possibly pre-check) state; the actual SHA fetch happens asynchronously
+// and any drift fires a doc-updated broadcast.
+func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	doc, accErr := a.checkDocAccess(r, id)
+	if accErr != nil {
+		a.writeAccessError(w, r, accErr)
+		return
+	}
+	token := ""
+	if u := a.currentUser(r); u != nil {
+		token = u.AccessToken
+	}
+	a.runSourceCheck(doc, token, true)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "checking"})
 }
 
 // reanchor maps each comment's anchor.exact into the new content.

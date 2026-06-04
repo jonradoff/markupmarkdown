@@ -97,6 +97,10 @@ export const api = {
    * possible, and flips the rest to orphan. */
   syncDocumentSource: (id: string) =>
     req<SyncSourceResponse>(`/api/documents/${id}/sync`, { method: "POST" }),
+  /** Forces an immediate upstream SHA check, bypassing the server-side
+   * TTL. Any drift fires a doc-updated broadcast over SSE. */
+  checkDocumentSource: (id: string) =>
+    req<{ status: string }>(`/api/documents/${id}/check-source`, { method: "POST" }),
 
   listTrash: () => req<TrashItem[]>("/api/me/trash"),
   restoreDocument: (id: string) =>
@@ -108,6 +112,15 @@ export const api = {
     req<void>("/api/me/notifications/read", { method: "POST" }),
   markNotificationRead: (id: string) =>
     req<void>(`/api/me/notifications/${id}/read`, { method: "POST" }),
+  /** Mark every pending notification for this comment as read — fires
+   * whenever the viewer activates the comment, regardless of how they
+   * got there. Returns {updated} so callers can tell whether the bell
+   * needs refreshing. */
+  markNotificationsForComment: (commentId: string) =>
+    req<{ updated: number }>(
+      `/api/me/notifications/comment/${commentId}/read`,
+      { method: "POST" }
+    ),
   listMentionCandidates: (docId: string) =>
     req<MentionCandidate[]>(`/api/documents/${docId}/mention-candidates`),
 

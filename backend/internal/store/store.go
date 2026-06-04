@@ -318,6 +318,26 @@ func (s *Store) MarkNotificationRead(ctx context.Context, userID, id string) err
 	return err
 }
 
+// MarkNotificationsReadForComment marks every unread notification for
+// (user, comment) as read. Powers the auto-decrement of the bell badge
+// as the user scrolls through new comments — viewing the comment
+// counts as reading the notification, regardless of whether they
+// arrived via the bell.
+func (s *Store) MarkNotificationsReadForComment(ctx context.Context, userID, commentID string) (int64, error) {
+	res, err := s.Notifications().UpdateMany(ctx,
+		bson.M{
+			"user_id":    userID,
+			"comment_id": commentID,
+			"read_at":    bson.M{"$exists": false},
+		},
+		bson.M{"$set": bson.M{"read_at": time.Now().UTC()}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
+}
+
 // FindUsersByLogins returns user records for the supplied GitHub login set.
 // Used by mention parsing to resolve @login → user.ID.
 func (s *Store) FindUsersByLogins(ctx context.Context, logins []string) ([]models.User, error) {

@@ -233,7 +233,11 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 	// stale. The current request returns the state we have right now;
 	// the refresh result hits subsequent readers (and broadcasts on
 	// change so any open viewer's banner appears without a reload).
-	a.maybeRefreshSourceDrift(doc)
+	userToken := ""
+	if u := a.currentUser(r); u != nil {
+		userToken = u.AccessToken
+	}
+	a.maybeRefreshSourceDrift(doc, userToken)
 	// Read prior view BEFORE bumping it, so the response reflects the
 	// state the user is about to see (unread = new since last visit).
 	if u := a.currentUser(r); u != nil {

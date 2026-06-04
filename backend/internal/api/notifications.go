@@ -120,6 +120,30 @@ func (a *API) markNotificationRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// markNotificationsReadForComment is invoked by the doc page whenever
+// the viewer activates a comment (clicks a highlight, steps with j/k,
+// arrives via deep-link). Marks any pending notifications referencing
+// that comment as read so the bell badge decrements as the user
+// catches up — not only when they enter via the bell itself.
+func (a *API) markNotificationsReadForComment(w http.ResponseWriter, r *http.Request) {
+	user := a.currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	commentID := mux.Vars(r)["commentId"]
+	if commentID == "" {
+		writeError(w, http.StatusBadRequest, "commentId required")
+		return
+	}
+	updated, err := a.store.MarkNotificationsReadForComment(r.Context(), user.ID, commentID)
+	if err != nil {
+		internalError(w, "store.mark_read_for_comment", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+}
+
 // listMentionCandidates returns the union of GitHub-signed-in users who've
 // commented or replied on this doc. Powers the autocomplete in the comment
 // composer.

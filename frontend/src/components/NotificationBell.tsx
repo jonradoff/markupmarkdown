@@ -24,7 +24,9 @@ export default function NotificationBell() {
     }
   }, [user]);
 
-  // Poll every 45s while the tab is visible, and refresh immediately on focus.
+  // Poll every 45s while the tab is visible, refresh on focus, and
+  // refresh whenever another part of the app marks notifications read
+  // (e.g. the doc page activating a comment).
   useEffect(() => {
     if (!user) {
       setNotifications([]);
@@ -33,12 +35,15 @@ export default function NotificationBell() {
     }
     refresh();
     const onFocus = () => refresh();
+    const onExternalUpdate = () => refresh();
     window.addEventListener("focus", onFocus);
+    window.addEventListener("mm:notifications-updated", onExternalUpdate);
     const id = window.setInterval(() => {
       if (document.visibilityState === "visible") refresh();
     }, 45_000);
     return () => {
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("mm:notifications-updated", onExternalUpdate);
       window.clearInterval(id);
     };
   }, [user, refresh]);

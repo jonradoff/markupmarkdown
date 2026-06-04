@@ -60,7 +60,23 @@ export default function DocumentPage() {
   const setActiveId = useCallback(
     (commentId: string | null) => {
       setActiveIdRaw(commentId);
-      if (commentId) markSessionRead(commentId);
+      if (commentId) {
+        markSessionRead(commentId);
+        // Mark any pending notifications for this comment as read so
+        // the bell badge decrements whether the viewer arrived here
+        // via the bell or by scrolling. Fire-and-forget; the bell
+        // refreshes on the "mm:notifications-updated" window event.
+        void api
+          .markNotificationsForComment(commentId)
+          .then(({ updated }) => {
+            if (updated > 0) {
+              window.dispatchEvent(new CustomEvent("mm:notifications-updated"));
+            }
+          })
+          .catch(() => {
+            // Network blip; bell's 45s poll will reconcile.
+          });
+      }
     },
     [markSessionRead]
   );
@@ -277,6 +293,39 @@ export default function DocumentPage() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // When the tab regains focus, ask the backend for a fresh source
+  // drift check (bypassing the server-side TTL) and refetch the doc
+  // metadata. Any drift fires a doc-updated SSE event that surfaces
+  // the banner without a page reload.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    async function refreshOnFocus() {
+      if (!id || cancelled) return;
+      try {
+        await api.checkDocumentSource(id);
+      } catch {
+        /* not GitHub-sourced or other expected failure */
+      }
+      try {
+        const d = await api.getDocument(id);
+        if (!cancelled) setDoc(d);
+      } catch {
+        /* network blip */
+      }
+    }
+    const onFocus = () => {
+      if (document.visibilityState === "visible") refreshOnFocus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [id]);
 
   // Measure the two sticky bars at the top of the sidebar with a
   // ResizeObserver so we always know the current header/nav-bar
