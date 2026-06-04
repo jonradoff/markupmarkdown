@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Guidance for Claude (or any agentic assistant) maintaining or extending **markupmarkdown** — a Google-Docs-style commenting app for markdown files, with an MCP server so other agents can join the same review loop.
+Notes for anyone — human or AI — picking up this codebase.
 
-If you're forking this and wondering "how do I make sense of this project, what are its non-obvious rules, and how do I deploy a change safely?" — start here.
+The project is **markupmarkdown**: a Google-Docs-style commenting app for markdown files, with an MCP server so agents can join the same review loop as people. If you're forking it and want to know what's load-bearing, what's idiomatic for this project, and what'll bite you if you change it without thinking — that's what's below.
 
 ---
 
@@ -72,16 +72,16 @@ fly.toml + Dockerfile              # single-process production deploy
 
 ---
 
-## Critical conventions
+## Conventions
 
-### Build checks (run before every commit)
+### Build + lint + test checks (run before every commit)
 
 ```
-cd /Users/jonradoff/markupmarkdown/backend && go build ./...
-cd /Users/jonradoff/markupmarkdown/frontend && npx tsc --noEmit
+cd backend  && go build ./... && golangci-lint run ./... && go test ./...
+cd frontend && npx tsc --noEmit && npm run test:unit
 ```
 
-Both must be clean. There's no test suite worth speaking of; type and build correctness is the first line of defense.
+Everything must be clean. Tests + lint are both first-line defenses, not optional. Coverage target on the audited Go surface is 80%; CI fails if a PR drops below.
 
 ### Dev servers
 
@@ -98,9 +98,9 @@ MongoDB Atlas, database `markupmarkdown` (dev defaults; see `backend/internal/co
 
 ---
 
-## Authoritative rules for agentic maintenance
+## Rules the codebase enforces
 
-These are the rules the codebase already enforces. Don't break them; if you extend a feature, keep applying them.
+These aren't aspirations — they're enforced in code today, with tests behind them. If you change a handler and skip one, the build catches it. The list below explains *why*, so you can judge edge cases when adding something new.
 
 ### 1. Tokens never elevate
 

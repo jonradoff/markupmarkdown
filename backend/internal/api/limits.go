@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -35,8 +36,8 @@ func (a *API) initLimits() {
 	a.rlCreateDoc = limits.NewBucket(10.0/60.0, 3)
 	// OAuth login starts: 5/min per IP.
 	a.rlOAuthStart = limits.NewBucket(5.0/60.0, 2)
-	// Comments: 60/min per identity.
-	a.rlComment = limits.NewBucket(60.0/60.0, 10)
+	// Comments: 60/min per identity = 1.0/sec.
+	a.rlComment = limits.NewBucket(1.0, 10)
 	// AI revision per user: 30/hour per user, no burst.
 	a.rlRevise = limits.NewBucket(30.0/3600.0, 1)
 	// Anthropic-key updates: 5/hour per user.
@@ -117,10 +118,9 @@ func (a *API) StartPurgeSweep() {
 			n, err := a.store.PurgeExpiredDeletes(ctx, time.Now().UTC().Add(-TrashRetention))
 			cancel()
 			if err != nil {
-				// Log it but keep the sweeper alive.
-				_ = err
+				log.Printf("purge sweep: %v", err)
 			} else if n > 0 {
-				// Visible breadcrumb that the sweep did something.
+				log.Printf("purge sweep: removed %d expired doc(s)", n)
 			}
 			time.Sleep(24 * time.Hour)
 		}

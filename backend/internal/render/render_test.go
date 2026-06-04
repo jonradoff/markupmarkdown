@@ -73,7 +73,7 @@ func TestPlainText_PreservesOrder(t *testing.T) {
 	ai := strings.Index(got, "A")
 	bi := strings.Index(got, "B")
 	ci := strings.Index(got, "C")
-	if !(ai < bi && bi < ci) {
+	if ai >= bi || bi >= ci {
 		t.Fatalf("unexpected order: %q", got)
 	}
 }

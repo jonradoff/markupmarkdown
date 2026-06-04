@@ -1,0 +1,74 @@
+version: "2"
+
+# Modest, defensible baseline. We enable the linters that catch real
+# correctness bugs and tune the suppressions so deferred Close() calls
+# and intentional design choices (insecure-by-design OAuth cookies,
+# operator-controlled log lines in main.go) don't drown out signal.
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck       # unchecked errors (with deferred-Close suppression)
+    - govet          # canonical Go vet
+    - ineffassign    # ineffective assignments
+    - staticcheck    # quality + correctness checks
+    - unused         # unused symbols
+    - misspell       # common English misspellings
+    - bodyclose      # unclosed HTTP response bodies
+    - gosec          # security-focused checks
+
+  settings:
+    errcheck:
+      # Ignore the standard idioms: defer Body.Close() / Cursor.Close(ctx),
+      # fmt.Fprintf to ResponseWriter (already error-checked at flusher
+      # level), and best-effort .UnsetXXX paths.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*go.mongodb.org/mongo-driver/v2/mongo.Cursor).Close
+        - (*net/http.Response).Body.Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+    gosec:
+      excludes:
+        # G104 (errcheck): duplicates errcheck's domain.
+        - G104
+        # G304 (file inclusion via variable): config.Load reads a YAML
+        # path from env. Operator-controlled by design.
+        - G304
+        # G706 (log injection): cmd/* logs are operator-controlled
+        # config values at startup. Not user-tainted.
+        - G706
+        # G704 (SSRF): publicGitHubCheck constructs the URL itself from
+        # validated components; not user-supplied.
+        - G704
+        # G118 (cancel leak): contextDetached deliberately leaks the
+        # cancel; the timeout itself bounds the lifetime. Documented.
+        - G118
+        # G124 (cookie attrs): mm_oauth uses SameSite=Lax intentionally
+        # so it survives the top-level redirect from GitHub. Documented.
+        - G124
+
+  exclusions:
+    rules:
+      # Test files: skip errcheck/gosec/bodyclose on synthetic mocks.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+          - govet
+      # The one-shot migration command keeps its body-close idioms.
+      - path: cmd/migrate-private/
+        linters:
+          - bodyclose
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

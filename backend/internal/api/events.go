@@ -42,8 +42,10 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	sub := a.hub.Subscribe(docID)
 	defer a.hub.Unsubscribe(sub)
 
-	// Initial hello so the client knows it's connected.
-	fmt.Fprintf(w, "event: hello\ndata: %s\n\n", docID)
+	// Initial hello so the client knows it's connected. docID has been
+	// validated by checkDocAccess (the doc exists in our DB by this ID);
+	// SSE stream is text/event-stream, not HTML, so it isn't an XSS sink.
+	fmt.Fprintf(w, "event: hello\ndata: %s\n\n", docID) //nolint:gosec // see comment above
 	flusher.Flush()
 
 	// Heartbeat every 25s to keep proxies from cutting the connection.

@@ -13,9 +13,12 @@ import (
 	"time"
 )
 
+// GitHub OAuth + REST endpoints. gosec G101 flags `tokenURL` as a
+// hardcoded credential because of the substring "access_token" — it's a
+// public URL constant, not a secret.
 const (
 	authorizeURL = "https://github.com/login/oauth/authorize"
-	tokenURL     = "https://github.com/login/oauth/access_token"
+	tokenURL     = "https://github.com/login/oauth/access_token" //nolint:gosec // public URL, not a credential
 	userURL      = "https://api.github.com/user"
 	emailsURL    = "https://api.github.com/user/emails"
 )

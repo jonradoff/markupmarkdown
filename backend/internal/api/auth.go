@@ -22,9 +22,6 @@ const (
 	oauthCookieTTL = 10 * time.Minute
 )
 
-// userKey is the request context key for the authenticated user.
-type userKey struct{}
-
 // tokenInfoKey carries the API token used (if any) so write handlers can
 // stamp comments with actor_kind="agent" when the token says so.
 type tokenInfoKey struct{}
@@ -286,9 +283,11 @@ func (a *API) authCallback(w http.ResponseWriter, r *http.Request) {
 	if !isSafeRedirect(redirect) {
 		redirect = "/"
 	}
-	// Redirect back to the frontend, not to this backend host.
+	// Redirect back to the frontend host (server-config, not user-supplied)
+	// + a path that's been validated by isSafeRedirect to be relative and
+	// local. Open-redirect: not possible.
 	dest := a.cfg.Frontend.URL + redirect
-	http.Redirect(w, r, dest, http.StatusFound)
+	http.Redirect(w, r, dest, http.StatusFound) //nolint:gosec // dest = trusted host + validated relative path
 }
 
 func (a *API) authLogout(w http.ResponseWriter, r *http.Request) {

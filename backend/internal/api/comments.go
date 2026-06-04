@@ -115,9 +115,11 @@ func markMine(comments []models.Comment, viewerID string) {
 		return
 	}
 	for i := range comments {
-		comments[i].Mine = comments[i].AuthorID == viewerID
-		for j := range comments[i].Replies {
-			comments[i].Replies[j].Mine = comments[i].Replies[j].AuthorID == viewerID
+		c := &comments[i]
+		c.Mine = c.AuthorID == viewerID
+		for j := range c.Replies {
+			r := &c.Replies[j]
+			r.Mine = r.AuthorID == viewerID
 		}
 	}
 }
@@ -148,9 +150,11 @@ func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comm
 		}
 	}
 	for i := range comments {
-		collect(comments[i].ActorKind, comments[i].TokenID, comments[i].AuthorID)
-		for j := range comments[i].Replies {
-			collect(comments[i].Replies[j].ActorKind, comments[i].Replies[j].TokenID, comments[i].Replies[j].AuthorID)
+		c := &comments[i]
+		collect(c.ActorKind, c.TokenID, c.AuthorID)
+		for j := range c.Replies {
+			r := &c.Replies[j]
+			collect(r.ActorKind, r.TokenID, r.AuthorID)
 		}
 	}
 	tokens, _ := a.store.GetAPITokensByIDs(ctx, mapKeys(tokenIDs))
@@ -178,11 +182,13 @@ func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comm
 		*avatarURL = ""
 	}
 	for i := range comments {
-		overlay(comments[i].ActorKind, comments[i].TokenID, comments[i].AuthorID,
-			&comments[i].Author, &comments[i].OwnerName, &comments[i].OwnerLogin, &comments[i].AuthorAvatarURL)
-		for j := range comments[i].Replies {
-			overlay(comments[i].Replies[j].ActorKind, comments[i].Replies[j].TokenID, comments[i].Replies[j].AuthorID,
-				&comments[i].Replies[j].Author, &comments[i].Replies[j].OwnerName, &comments[i].Replies[j].OwnerLogin, &comments[i].Replies[j].AuthorAvatarURL)
+		c := &comments[i]
+		overlay(c.ActorKind, c.TokenID, c.AuthorID,
+			&c.Author, &c.OwnerName, &c.OwnerLogin, &c.AuthorAvatarURL)
+		for j := range c.Replies {
+			r := &c.Replies[j]
+			overlay(r.ActorKind, r.TokenID, r.AuthorID,
+				&r.Author, &r.OwnerName, &r.OwnerLogin, &r.AuthorAvatarURL)
 		}
 	}
 }

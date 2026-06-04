@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"markupmarkdown/internal/ai"
 	"markupmarkdown/internal/httperr"
@@ -229,12 +230,12 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, token
 func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool) (*models.Comment, error) {
 	u, _ := a.store.GetUser(ctx, userID)
 	name := preferName(u)
-	var update bson_M
+	var update bson.M
 	now := time.Now().UTC()
 	if reopen {
-		update = bson_M{"resolved": false, "resolved_by": "", "resolved_at": nil}
+		update = bson.M{"resolved": false, "resolved_by": "", "resolved_at": nil}
 	} else {
-		update = bson_M{"resolved": true, "resolved_by": name, "resolved_at": now}
+		update = bson.M{"resolved": true, "resolved_by": name, "resolved_at": now}
 	}
 	c, err := a.store.UpdateComment(ctx, id, update)
 	if err != nil {
@@ -246,10 +247,6 @@ func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
 	return c, nil
 }
-
-// bson_M is a tiny alias to avoid pulling bson.M into mcpapi.go for this
-// one update.
-type bson_M = map[string]any
 
 func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID string) (*mcpserver.RevisionOutput, error) {
 	_ = tokenID // logged at the MCP boundary; reserved here for future per-token accounting

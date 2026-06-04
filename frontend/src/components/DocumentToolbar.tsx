@@ -1,0 +1,128 @@
+import { Link } from "react-router-dom";
+import type { MdDocument } from "../types";
+import { formatRelative } from "../utils/format";
+
+// Toolbar that lives at the top of the document content column: parent
+// link (for AI revisions), title-as-rename-button, action buttons,
+// revision-meta chip, "cloned from" + "updated" meta line, revisions
+// list. Pulled out of DocumentPage so the page file stays focused on
+// data flow + layout.
+
+interface Props {
+  doc: MdDocument;
+  me: string;
+  signedIn: boolean;
+  onRename: () => void;
+  onRevise: () => void;
+  onShare: () => void;
+  onDownload: () => void;
+  onDelete: () => void;
+}
+
+export default function DocumentToolbar({
+  doc,
+  me,
+  signedIn,
+  onRename,
+  onRevise,
+  onShare,
+  onDownload,
+  onDelete,
+}: Props) {
+  return (
+    <>
+      {/* Parent link (if this doc was AI-revised from another) */}
+      {doc.parent && (
+        <div className="text-xs text-muted mb-1">
+          ← Revised from{" "}
+          <Link to={`/d/${doc.parent.id}`} className="text-accent hover:underline">
+            {doc.parent.title}
+          </Link>
+        </div>
+      )}
+
+      {/* Title row */}
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <button
+          onClick={onRename}
+          className="text-2xl font-semibold tracking-tight text-ink hover:text-accent text-left flex-1 min-w-0 truncate"
+          title="Click to rename"
+        >
+          {doc.title}
+        </button>
+        <div className="flex items-center gap-3 text-sm shrink-0">
+          <button
+            onClick={onRevise}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-accent-fg font-medium hover:opacity-90"
+            title="Have Claude apply your resolved comments"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2 9 9l-7 1 5 5-1 7 6-4 6 4-1-7 5-5-7-1z" />
+            </svg>
+            Revise with AI
+          </button>
+          <button onClick={onShare} className="text-muted hover:text-ink" title="Share this document">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+              <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+            </svg>
+          </button>
+          <button onClick={onDownload} className="text-muted hover:text-ink" title="Download as .md">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+            </svg>
+          </button>
+          <button onClick={onDelete} className="text-faint hover:text-danger">
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {doc.revisionMeta && (
+        <div className="text-xs text-muted mb-1 inline-flex items-center gap-1.5 bg-accent-soft text-accent rounded px-2 py-0.5">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2 9 9l-7 1 5 5-1 7 6-4 6 4-1-7 5-5-7-1z" />
+          </svg>
+          AI-revised by {doc.revisionMeta.generatedBy} — applied{" "}
+          {doc.revisionMeta.appliedCommentIds.length} comment
+          {doc.revisionMeta.appliedCommentIds.length === 1 ? "" : "s"}
+        </div>
+      )}
+
+      <div className="text-xs text-muted mb-6">
+        {doc.origin === "url" && doc.sourceUrl && (
+          <>
+            Cloned from{" "}
+            <a href={doc.sourceUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              {doc.sourceUrl}
+            </a>
+            {" · "}
+          </>
+        )}
+        updated {formatRelative(doc.updatedAt)}
+        {!me && !signedIn && (
+          <span className="ml-2 text-amber-600">· Set your name in the header to comment</span>
+        )}
+      </div>
+
+      {doc.children && doc.children.length > 0 && (
+        <div className="text-xs text-muted mb-6 flex items-center gap-2 flex-wrap">
+          Revisions:
+          {doc.children.map((c, i) => (
+            <span key={c.id} className="inline-flex items-center gap-1">
+              <Link to={`/d/${c.id}`} className="text-accent hover:underline">
+                v{i + 2}
+              </Link>
+              {c.revisionMeta?.generatedBy && (
+                <span className="text-faint">by {c.revisionMeta.generatedBy}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}

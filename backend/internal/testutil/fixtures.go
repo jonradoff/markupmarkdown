@@ -19,7 +19,7 @@ import (
 func NewTestUser(t *testing.T, st *store.Store) *models.User {
 	t.Helper()
 	now := time.Now().UTC()
-	u := &models.User{
+	u := &models.User{ //nolint:gosec // fixture; the "fake-gh-token" string is literal test data, not a credential
 		ID:          uuid.NewString(),
 		GitHubID:    int64(now.UnixNano() & 0x7fffffff),
 		Login:       "user-" + uuid.NewString()[:8],

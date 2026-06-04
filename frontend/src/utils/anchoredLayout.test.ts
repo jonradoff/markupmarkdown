@@ -1,20 +1,67 @@
-// Tiny smoke check that doubles as documentation. Run via Playwright's
-// test-runner or any vitest setup; for now it's manually consulted by
-// the engineer reading the file.
+import { describe, expect, it } from "vitest";
+import { relaxAnchors } from "./anchoredLayout";
 
-import { relaxAnchors } from './anchoredLayout';
+describe("relaxAnchors", () => {
+  it("returns an empty object for no items", () => {
+    expect(relaxAnchors([])).toEqual({});
+  });
 
-// no-op so this file is reachable; if a test runner is added this
-// becomes a real `describe`.
-export function _demo() {
-  const items = [
-    { id: 'a', desiredTop: 0, height: 100 },
-    { id: 'b', desiredTop: 50, height: 100 }, // would overlap a
-    { id: 'c', desiredTop: 500, height: 100 }, // far below — anchored
-  ];
-  const out = relaxAnchors(items, 10);
-  if (out.a !== 0) throw new Error('a should anchor at 0');
-  if (out.b !== 110) throw new Error('b should be pushed below a');
-  if (out.c !== 500) throw new Error('c should stay at its desired anchor');
-  return true;
-}
+  it("leaves non-overlapping items at their desired tops", () => {
+    const out = relaxAnchors(
+      [
+        { id: "a", desiredTop: 0, height: 100 },
+        { id: "b", desiredTop: 500, height: 100 },
+      ],
+      10,
+    );
+    expect(out).toEqual({ a: 0, b: 500 });
+  });
+
+  it("pushes overlapping items down to clear the previous one + gap", () => {
+    const out = relaxAnchors(
+      [
+        { id: "a", desiredTop: 0, height: 100 },
+        { id: "b", desiredTop: 50, height: 100 }, // would overlap a
+      ],
+      10,
+    );
+    expect(out.a).toBe(0);
+    expect(out.b).toBe(110); // a.bottom (100) + gap (10)
+  });
+
+  it("only pushes down, never up — keeps items anchored to their highlights", () => {
+    const out = relaxAnchors(
+      [
+        { id: "a", desiredTop: 200, height: 100 },
+        { id: "b", desiredTop: 1000, height: 100 }, // far below, unaffected
+      ],
+      10,
+    );
+    expect(out.b).toBe(1000);
+  });
+
+  it("cascades pushes when many items pile up", () => {
+    const out = relaxAnchors(
+      [
+        { id: "a", desiredTop: 0, height: 100 },
+        { id: "b", desiredTop: 10, height: 100 },
+        { id: "c", desiredTop: 20, height: 100 },
+      ],
+      10,
+    );
+    expect(out.a).toBe(0);
+    expect(out.b).toBe(110);
+    expect(out.c).toBe(220);
+  });
+
+  it("honors a custom gap", () => {
+    const out = relaxAnchors(
+      [
+        { id: "a", desiredTop: 0, height: 100 },
+        { id: "b", desiredTop: 0, height: 100 },
+      ],
+      30,
+    );
+    expect(out.b).toBe(130);
+  });
+});

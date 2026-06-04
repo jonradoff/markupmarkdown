@@ -339,6 +339,16 @@ The Go backend has a unit + integration test suite that exercises the
 HTTP handlers against a real MongoDB Atlas instance. Coverage is tracked
 in Codecov with an 80% project target.
 
+**Current coverage**: **80.4% on the audited surface** (per Codecov, with
+`cmd/`, `testutil/`, the embedded SKILL.md, and the SPA file-server
+explicitly excluded — see `codecov.yml`). The raw `go tool cover` total
+across every file is **72.7%**; both numbers are honest, they just measure
+different scopes. The audited number is what `codecov.yml`'s 80% gate
+applies to.
+
+The frontend has a separate suite: Vitest for unit tests on the utility
+modules, Playwright for end-to-end browser flows.
+
 ### Backend
 
 ```sh

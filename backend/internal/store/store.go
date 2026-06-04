@@ -516,10 +516,7 @@ func (s *Store) LatestDescendant(ctx context.Context, docID string) (*models.Doc
 	current := docID
 	var latest *models.Document
 	seen := map[string]bool{}
-	for {
-		if seen[current] {
-			break
-		}
+	for !seen[current] {
 		seen[current] = true
 		children, err := s.ListChildren(ctx, current)
 		if err != nil {

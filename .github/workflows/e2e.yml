@@ -1,0 +1,44 @@
+name: E2E (Playwright)
+
+# Run on-demand only. The E2E job spins up a real backend + frontend, so
+# it needs MONGODB_URI and an encryption key configured as repo secrets.
+# Triggered via `gh workflow run e2e.yml` or the Actions tab.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly smoke at 09:00 UTC.
+    - cron: "0 9 * * *"
+
+jobs:
+  test-e2e:
+    runs-on: ubuntu-latest
+    env:
+      MARKUPMARKDOWN_ENV: test
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      DATABASE_NAME: markupmarkdown-test-e2e-ci
+      MARKUPMARKDOWN_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npx playwright test

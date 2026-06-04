@@ -88,7 +88,7 @@ func findConfigPath() string {
 func LoadTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	loadEnvTest()
-	os.Setenv("MARKUPMARKDOWN_ENV", testEnv)
+	_ = os.Setenv("MARKUPMARKDOWN_ENV", testEnv)
 
 	path := findConfigPath()
 	if path == "" {

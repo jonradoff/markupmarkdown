@@ -41,8 +41,9 @@ func TestInternalError_Sanitizes(t *testing.T) {
 		t.Error("missing user-facing error message")
 	}
 	// Should NOT echo the internal detail.
-	if string(w.Body.Bytes()) == "" || (body.Error != "" && contains(splitWords(body.Error), "mongo")) {
-		t.Errorf("internal detail leaked: %s", w.Body.Bytes())
+	bodyStr := w.Body.String()
+	if bodyStr == "" || (body.Error != "" && contains(splitWords(body.Error), "mongo")) {
+		t.Errorf("internal detail leaked: %s", bodyStr)
 	}
 }
 
