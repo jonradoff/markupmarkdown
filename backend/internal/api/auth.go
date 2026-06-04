@@ -32,6 +32,7 @@ type tokenInfoKey struct{}
 type tokenInfo struct {
 	TokenID string
 	Label   string
+	Scope   models.TokenScope
 }
 
 func authTokenFromHeader(r *http.Request) string {
@@ -94,15 +95,27 @@ func (a *API) userFromToken(r *http.Request, tok string) *models.User {
 	if err != nil || rec == nil {
 		return nil
 	}
+	// Reject expired tokens. Revoked tokens are filtered out at the store
+	// layer (GetAPITokenByHash returns nil for them).
+	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
+		return nil
+	}
 	u, err := a.store.GetUser(r.Context(), rec.UserID)
 	if err != nil || u == nil {
 		return nil
+	}
+	// Default scope = write for tokens created before scopes existed. Keeps
+	// pre-existing tokens able to comment, but not delete or accept AI revs.
+	scope := rec.Scope
+	if scope == "" {
+		scope = models.TokenScopeWrite
 	}
 	// Stash token info on the request so write handlers can mark agent
 	// and stamp the bot identity (token label) on created content.
 	*r = *r.WithContext(contextWithTokenInfo(r.Context(), tokenInfo{
 		TokenID: rec.ID,
 		Label:   rec.Label,
+		Scope:   scope,
 	}))
 	// Touch last-used in the background; never block the request on it.
 	go a.store.TouchAPIToken(contextDetached(), rec.ID)

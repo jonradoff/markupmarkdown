@@ -24,14 +24,33 @@ import (
 // API is the subset of the api.API surface we lean on. Defined as an
 // interface so we don't pull api into mcpserver's import graph.
 type API interface {
-	UserFromBearer(ctx context.Context, token string) (user *models.User, tokenID, label string, err error)
+	// UserFromBearer resolves the bearer token. Returns scope alongside the
+	// user so tool handlers can enforce read/write/admin before the work
+	// starts.
+	UserFromBearer(ctx context.Context, token string) (user *models.User, tokenID, label string, scope models.TokenScope, err error)
 	DocAccess(ctx context.Context, userID, docID string, accessToken string) (*models.Document, error)
 	ListDocumentsForUser(ctx context.Context, userID string, includeTrash bool) ([]models.Document, error)
 	ListComments(ctx context.Context, docID string) ([]models.Comment, error)
 	CreateComment(ctx context.Context, userID, docID, body, quotedText string, occurrence int, tokenID, agentLabel string) (*models.Comment, error)
 	ReplyToComment(ctx context.Context, userID, commentID, body, tokenID, agentLabel string) (*models.Comment, error)
 	ResolveComment(ctx context.Context, userID, commentID string, reopen bool) (*models.Comment, error)
-	ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool) (*RevisionOutput, error)
+	// ReviseWithAI requires admin scope when accept=true (creates a new
+	// document); write scope is sufficient when accept=false (preview only).
+	ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID string) (*RevisionOutput, error)
+
+	// AllowCommentRate returns false if the calling user has hit the
+	// comment-rate budget. Same bucket the REST handlers use.
+	AllowCommentRate(userID string) bool
+	// AllowReviseRate / AcquireReviseSlot mirror the REST AI-revision guards.
+	AllowReviseRate(userID string) bool
+	AcquireReviseSlot(userID string) (release func(), ok bool)
+	// LogTokenAction is the same sampled per-(token,action) writer used by
+	// REST. Safe to call from tool entry points.
+	LogTokenAction(ctx context.Context, tokenID, action, docID string)
+	// ValidateCommentBody / ValidateReplyBody share the field-length rules
+	// with REST.
+	ValidateCommentBody(body string) (string, error)
+	ValidateReplyBody(body string) (string, error)
 }
 
 type RevisionOutput struct {
@@ -77,12 +96,12 @@ func wrapAuth(next http.Handler, a API) http.Handler {
 			return
 		}
 		tok := strings.TrimSpace(h[7:])
-		user, tokenID, label, err := a.UserFromBearer(r.Context(), tok)
+		user, tokenID, label, scope, err := a.UserFromBearer(r.Context(), tok)
 		if err != nil || user == nil {
-			http.Error(w, `{"error":"invalid or revoked token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"invalid, expired, or revoked token"}`, http.StatusUnauthorized)
 			return
 		}
-		ctx := withAuthIdentity(r.Context(), authIdentity{User: user, Label: label, TokenID: tokenID})
+		ctx := withAuthIdentity(r.Context(), authIdentity{User: user, Label: label, TokenID: tokenID, Scope: scope})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -98,6 +117,21 @@ type authIdentity struct {
 	User    *models.User
 	Label   string
 	TokenID string
+	Scope   models.TokenScope
+}
+
+// requireScope returns nil + a friendly error tool result when the caller's
+// scope is below need. Use at the top of every write tool.
+func requireScope(id authIdentity, need models.TokenScope) (*mcp.CallToolResult, bool) {
+	have := id.Scope
+	if have == "" {
+		have = models.TokenScopeWrite // legacy tokens default to write
+	}
+	if have.AllowsScope(need) {
+		return nil, true
+	}
+	res, _ := errorResult("this token's scope (%s) cannot perform %s actions", string(have), string(need))
+	return res, false
 }
 type authKey struct{}
 
@@ -254,6 +288,12 @@ Use this for review feedback, suggested edits, questions, or to flag spans for a
 
 func (h *handlers) addComment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
+	if !h.api.AllowCommentRate(id.User.ID) {
+		return errorResult("rate limited: too many comments in a short window — slow down")
+	}
 	docID := req.GetString("document_id", "")
 	quoted := req.GetString("quoted_text", "")
 	body := req.GetString("body", "")
@@ -261,10 +301,18 @@ func (h *handlers) addComment(ctx context.Context, req mcp.CallToolRequest) (*mc
 	if docID == "" || quoted == "" || body == "" {
 		return errorResult("`document_id`, `quoted_text`, and `body` are required")
 	}
-	c, err := h.api.CreateComment(ctx, id.User.ID, docID, body, quoted, occ, id.TokenID, id.Label)
-	if err != nil {
-		return errorResult("add failed: %v", err)
+	if len(quoted) > 4*1024 {
+		return errorResult("`quoted_text` too long (max 4KB)")
 	}
+	cleanBody, err := h.api.ValidateCommentBody(body)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	c, err := h.api.CreateComment(ctx, id.User.ID, docID, cleanBody, quoted, occ, id.TokenID, id.Label)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "comment.create", docID)
 	return jsonResult(c)
 }
 
@@ -278,15 +326,30 @@ func replyTool() mcp.Tool {
 
 func (h *handlers) reply(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
+	if !h.api.AllowCommentRate(id.User.ID) {
+		return errorResult("rate limited: too many replies in a short window — slow down")
+	}
 	cid := req.GetString("comment_id", "")
 	body := req.GetString("body", "")
 	if cid == "" || body == "" {
 		return errorResult("`comment_id` and `body` are required")
 	}
-	c, err := h.api.ReplyToComment(ctx, id.User.ID, cid, body, id.TokenID, id.Label)
+	cleanBody, err := h.api.ValidateReplyBody(body)
 	if err != nil {
-		return errorResult("reply failed: %v", err)
+		return errorResult("%s", err.Error())
 	}
+	c, err := h.api.ReplyToComment(ctx, id.User.ID, cid, cleanBody, id.TokenID, id.Label)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	docID := ""
+	if c != nil {
+		docID = c.DocumentID
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "reply.create", docID)
 	return jsonResult(c)
 }
 
@@ -299,14 +362,22 @@ func resolveTool() mcp.Tool {
 
 func (h *handlers) resolve(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
 	cid := req.GetString("comment_id", "")
 	if cid == "" {
 		return errorResult("`comment_id` is required")
 	}
 	c, err := h.api.ResolveComment(ctx, id.User.ID, cid, false)
 	if err != nil {
-		return errorResult("resolve failed: %v", err)
+		return errorResult("%s", err.Error())
 	}
+	docID := ""
+	if c != nil {
+		docID = c.DocumentID
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "comment.resolve", docID)
 	return jsonResult(c)
 }
 
@@ -319,14 +390,22 @@ func reopenTool() mcp.Tool {
 
 func (h *handlers) reopen(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
 	cid := req.GetString("comment_id", "")
 	if cid == "" {
 		return errorResult("`comment_id` is required")
 	}
 	c, err := h.api.ResolveComment(ctx, id.User.ID, cid, true)
 	if err != nil {
-		return errorResult("reopen failed: %v", err)
+		return errorResult("%s", err.Error())
 	}
+	docID := ""
+	if c != nil {
+		docID = c.DocumentID
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "comment.reopen", docID)
 	return jsonResult(c)
 }
 
@@ -350,9 +429,33 @@ func (h *handlers) revise(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	commentIDs := req.GetStringSlice("comment_ids", nil)
 	accept := req.GetBool("accept", false)
 
-	out, err := h.api.ReviseWithAI(ctx, id.User.ID, docID, commentIDs, accept)
-	if err != nil {
-		return errorResult("revise failed: %v", err)
+	// Preview = write scope; Accept = admin scope (creates a new doc).
+	needScope := models.TokenScopeWrite
+	if accept {
+		needScope = models.TokenScopeAdmin
 	}
+	if res, ok := requireScope(id, needScope); !ok {
+		return res, nil
+	}
+	// AI revisions are expensive — burn the user's Anthropic budget and a
+	// concurrent slot, same as REST.
+	if !h.api.AllowReviseRate(id.User.ID) {
+		return errorResult("rate limited: you've reached the AI-revision budget (30/hour) — try again later")
+	}
+	release, ok := h.api.AcquireReviseSlot(id.User.ID)
+	if !ok {
+		return errorResult("you already have the maximum (3) AI revisions in flight — wait for one to finish")
+	}
+	defer release()
+
+	out, err := h.api.ReviseWithAI(ctx, id.User.ID, docID, commentIDs, accept, id.TokenID)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	action := "revision.preview"
+	if accept {
+		action = "revision.accept"
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, action, docID)
 	return jsonResult(out)
 }

@@ -100,6 +100,30 @@ type Notification struct {
 	ReadAt         *time.Time       `bson:"read_at,omitempty" json:"readAt,omitempty"`
 }
 
+// TokenScope is the privilege level a Personal Access Token grants.
+//
+// The hierarchy is admin > write > read:
+//   - read:  list docs, read comments, list mention candidates,
+//            list notifications. Cannot write anything.
+//   - write: read + add comments / replies, resolve threads, run
+//            revise_with_ai in preview mode. Cannot delete documents
+//            or accept AI revisions.
+//   - admin: write + delete documents, accept AI revisions (which
+//            creates a new child document), edit other authored fields.
+type TokenScope string
+
+const (
+	TokenScopeRead  TokenScope = "read"
+	TokenScopeWrite TokenScope = "write"
+	TokenScopeAdmin TokenScope = "admin"
+)
+
+// AllowsScope returns true if `have` is at least as privileged as `need`.
+func (s TokenScope) AllowsScope(need TokenScope) bool {
+	rank := map[TokenScope]int{TokenScopeRead: 1, TokenScopeWrite: 2, TokenScopeAdmin: 3}
+	return rank[s] >= rank[need]
+}
+
 // APIToken is a per-user Personal Access Token. Used to authenticate REST
 // and MCP calls from agents (or scripts that can't carry the session
 // cookie). Content created via a token is always treated as agent-authored
@@ -113,9 +137,22 @@ type APIToken struct {
 	Hash       string     `bson:"hash" json:"-"`
 	Prefix     string     `bson:"prefix" json:"prefix"` // first 12 chars of token (e.g. "mmk_a3f7c2…")
 	Label      string     `bson:"label" json:"label"`
+	Scope      TokenScope `bson:"scope,omitempty" json:"scope"`
 	CreatedAt  time.Time  `bson:"created_at" json:"createdAt"`
+	ExpiresAt  *time.Time `bson:"expires_at,omitempty" json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `bson:"last_used_at,omitempty" json:"lastUsedAt,omitempty"`
 	RevokedAt  *time.Time `bson:"revoked_at,omitempty" json:"-"`
+}
+
+// TokenEvent is one entry in a per-token activity log. We sample
+// (~once/minute per token per action) so the collection stays small.
+type TokenEvent struct {
+	ID         string    `bson:"_id" json:"id"`
+	TokenID    string    `bson:"token_id" json:"-"`
+	UserID     string    `bson:"user_id" json:"-"`
+	Action     string    `bson:"action" json:"action"`
+	DocumentID string    `bson:"document_id,omitempty" json:"documentId,omitempty"`
+	At         time.Time `bson:"at" json:"at"`
 }
 
 type UserSecrets struct {

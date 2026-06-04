@@ -25,6 +25,7 @@ type API struct {
 	rlComment    *limits.Bucket
 	rlRevise     *limits.Bucket
 	rlAPIKeyPut  *limits.Bucket
+	rlTokenEdit  *limits.Bucket
 	sseCounter   *limits.Counter
 	reviseSlots  *limits.PerKeySemaphore
 	viewQueue    chan viewEvent
@@ -85,6 +86,7 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/me/tokens", a.createToken).Methods("POST")
 	r.HandleFunc("/api/me/tokens/{id}", a.updateToken).Methods("PATCH")
 	r.HandleFunc("/api/me/tokens/{id}", a.revokeToken).Methods("DELETE")
+	r.HandleFunc("/api/me/tokens/{id}/activity", a.tokenActivity).Methods("GET")
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {

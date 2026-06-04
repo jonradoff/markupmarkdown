@@ -10,36 +10,80 @@ import (
 	"github.com/google/uuid"
 
 	"markupmarkdown/internal/ai"
+	"markupmarkdown/internal/httperr"
 	"markupmarkdown/internal/mcpserver"
 	"markupmarkdown/internal/models"
 	"markupmarkdown/internal/render"
 )
 
+// sanitizeStoreErr wraps a raw store/mongo error into a generic, ID'd error
+// so MCP tool responses never leak Mongo schema details. The full original
+// error is logged server-side under the same ID.
+func sanitizeStoreErr(where string, err error) error {
+	id, msg := httperr.Log(where, err)
+	return fmt.Errorf("%s (id=%s)", msg, id)
+}
+
 // This file implements the mcpserver.API interface against the running
 // api.API. It exists so the MCP server can stay in its own package without
 // pulling in the full handler graph.
 
-func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, string, string, error) {
+func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, string, string, models.TokenScope, error) {
 	if !strings.HasPrefix(tok, "mmk_") || len(tok) < 32 {
-		return nil, "", "", nil
+		return nil, "", "", "", nil
 	}
 	rec, err := a.store.GetAPITokenByHash(ctx, HashToken(tok))
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", "", err
 	}
 	if rec == nil {
-		return nil, "", "", nil
+		return nil, "", "", "", nil
+	}
+	// Reject expired tokens. Revoked tokens are filtered at the store.
+	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
+		return nil, "", "", "", nil
 	}
 	u, err := a.store.GetUser(ctx, rec.UserID)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", "", err
 	}
 	if u == nil {
-		return nil, "", "", nil
+		return nil, "", "", "", nil
+	}
+	scope := rec.Scope
+	if scope == "" {
+		scope = models.TokenScopeWrite // pre-scope legacy tokens
 	}
 	go a.store.TouchAPIToken(contextDetached(), rec.ID)
-	return u, rec.ID, rec.Label, nil
+	return u, rec.ID, rec.Label, scope, nil
 }
+
+// AllowCommentRate / AllowReviseRate / AcquireReviseSlot expose the existing
+// REST-side throttles to the MCP path. Same buckets, so a script that
+// alternates between REST and MCP gets a single shared budget.
+func (a *API) AllowCommentRate(userID string) bool {
+	return a.rlComment.Allow("u:" + userID)
+}
+func (a *API) AllowReviseRate(userID string) bool {
+	return a.rlRevise.Allow("u:" + userID)
+}
+func (a *API) AcquireReviseSlot(userID string) (func(), bool) {
+	release := a.reviseSlots.Acquire(userID)
+	if release == nil {
+		return func() {}, false
+	}
+	return release, true
+}
+
+// LogTokenAction is exported for mcpserver.
+func (a *API) LogTokenAction(ctx context.Context, tokenID, action, docID string) {
+	a.logTokenAction(ctx, tokenID, action, docID)
+}
+
+// ValidateCommentBody / ValidateReplyBody let mcpserver share the REST
+// validation rules without importing internal handlers.
+func (a *API) ValidateCommentBody(body string) (string, error) { return ValidateCommentBody(body) }
+func (a *API) ValidateReplyBody(body string) (string, error)   { return ValidateReplyBody(body) }
 
 func (a *API) DocAccess(ctx context.Context, userID, docID, accessToken string) (*models.Document, error) {
 	doc, err := a.store.GetDocument(ctx, docID)
@@ -96,8 +140,10 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 
 	// Anchor the agent's comment by text-substring. We extract the plain
 	// text once and locate the Nth occurrence — frontend's anchor utility
-	// recomputes offsets at render time from the same logic.
-	plain := render.PlainText(doc.Content)
+	// recomputes offsets at render time from the same logic. Cached per
+	// (docID, updatedAt) so a batch of agent comments doesn't re-parse
+	// the doc each call.
+	plain := plainTextFor(doc)
 	matches := render.CountOccurrences(plain, quoted)
 	if matches == 0 {
 		return nil, fmt.Errorf("`quoted_text` not found in document — copy a verbatim span")
@@ -125,7 +171,7 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 	}
 	stampAgentWrite(c, tokenID, agentLabel)
 	if err := a.store.InsertComment(ctx, c); err != nil {
-		return nil, err
+		return nil, sanitizeStoreErr("mcp.create_comment.insert", err)
 	}
 	a.resolveAgentIdentity(ctx, c)
 	a.hub.Broadcast(docID, "comments-updated")
@@ -158,7 +204,7 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, token
 	_ = u
 	c, err := a.store.AppendReply(ctx, commentID, reply)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeStoreErr("mcp.reply.append", err)
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
 	a.fanOutCommentNotifications(fanOutInput{
@@ -181,7 +227,7 @@ func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool
 	}
 	c, err := a.store.UpdateComment(ctx, id, update)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeStoreErr("mcp.resolve.update", err)
 	}
 	if c == nil {
 		return nil, errors.New("comment not found")
@@ -194,14 +240,15 @@ func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool
 // one update.
 type bson_M = map[string]any
 
-func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool) (*mcpserver.RevisionOutput, error) {
+func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID string) (*mcpserver.RevisionOutput, error) {
+	_ = tokenID // logged at the MCP boundary; reserved here for future per-token accounting
 	doc, err := a.store.GetDocument(ctx, docID)
 	if err != nil || doc == nil {
 		return nil, errors.New("document not found")
 	}
 	apiKey, err := a.decryptedAnthropicKey(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeStoreErr("mcp.revise.decrypt_key", err)
 	}
 	if apiKey == "" {
 		return nil, errors.New("no Anthropic API key on file for this user — add one at the markupmarkdown UI before calling this tool")
@@ -209,7 +256,7 @@ func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs
 
 	allComments, err := a.store.ListComments(ctx, docID)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeStoreErr("mcp.revise.list_comments", err)
 	}
 	want := map[string]bool{}
 	for _, id := range commentIDs {
@@ -284,7 +331,7 @@ func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs
 			CreatedAt: now, UpdatedAt: now,
 		}
 		if err := a.store.InsertDocument(ctx, newDoc); err != nil {
-			return nil, err
+			return nil, sanitizeStoreErr("mcp.revise.insert_document", err)
 		}
 		out.NewDocID = newDoc.ID
 	}

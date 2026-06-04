@@ -54,6 +54,11 @@ func (a *API) previewRevision(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Tokens need at least write scope to spend the user's Anthropic key
+	// on a preview. Cookie sessions always satisfy this.
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 
 	apiKey, err := a.decryptedAnthropicKey(r.Context(), user.ID)
 	if err != nil {
@@ -236,6 +241,15 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "sign in required")
 		return
+	}
+	// Accepting a revision creates a new document and is the most
+	// privileged write — tokens need admin scope. Cookie sessions always
+	// satisfy this.
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+		return
+	}
+	if info, ok := tokenInfoFromRequest(r); ok {
+		a.logTokenAction(r.Context(), info.TokenID, "revision.accept", parentID)
 	}
 	capBody(w, r, maxBodyRevision)
 

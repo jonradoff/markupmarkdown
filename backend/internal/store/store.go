@@ -48,6 +48,7 @@ func (s *Store) UserSecrets() *mongo.Collection    { return s.db.Collection("use
 func (s *Store) DocumentViews() *mongo.Collection  { return s.db.Collection("document_views") }
 func (s *Store) Notifications() *mongo.Collection  { return s.db.Collection("notifications") }
 func (s *Store) APITokens() *mongo.Collection      { return s.db.Collection("api_tokens") }
+func (s *Store) TokenEvents() *mongo.Collection    { return s.db.Collection("token_events") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -87,6 +88,52 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 		{Keys: bson.D{{Key: "hash", Value: 1}}, Options: options.Index().SetUnique(true)},
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}},
 	})
+	tokenEventTTL := int32(30 * 24 * 3600) // 30 days
+	_, _ = s.TokenEvents().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "token_id", Value: 1}, {Key: "at", Value: -1}}},
+		{Keys: bson.D{{Key: "at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(tokenEventTTL)},
+	})
+}
+
+// LogTokenEvent appends an entry to the per-token activity log.
+func (s *Store) LogTokenEvent(ctx context.Context, e *models.TokenEvent) error {
+	_, err := s.TokenEvents().InsertOne(ctx, e)
+	return err
+}
+
+// MostRecentTokenEvent returns the latest event for (tokenID, action) — used
+// by the sampler to avoid writing more than one event per minute per action.
+func (s *Store) MostRecentTokenEvent(ctx context.Context, tokenID, action string) (*models.TokenEvent, error) {
+	opts := options.FindOne().SetSort(bson.D{{Key: "at", Value: -1}})
+	var ev models.TokenEvent
+	err := s.TokenEvents().FindOne(ctx, bson.M{"token_id": tokenID, "action": action}, opts).Decode(&ev)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+// ListTokenEvents returns the last `limit` events for a given token, newest first.
+func (s *Store) ListTokenEvents(ctx context.Context, tokenID string, limit int) ([]models.TokenEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "at", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := s.TokenEvents().Find(ctx, bson.M{"token_id": tokenID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.TokenEvent
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // API tokens
@@ -100,6 +147,24 @@ func (s *Store) GetAPITokenByHash(ctx context.Context, hash string) (*models.API
 	var t models.APIToken
 	err := s.APITokens().FindOne(ctx, bson.M{
 		"hash":       hash,
+		"revoked_at": bson.M{"$exists": false},
+	}).Decode(&t)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// GetAPITokenByID returns a single token scoped to the owning user. Filters
+// out revoked tokens. Used by token edit + activity endpoints.
+func (s *Store) GetAPITokenByID(ctx context.Context, userID, id string) (*models.APIToken, error) {
+	var t models.APIToken
+	err := s.APITokens().FindOne(ctx, bson.M{
+		"_id":        id,
+		"user_id":    userID,
 		"revoked_at": bson.M{"$exists": false},
 	}).Decode(&t)
 	if err == mongo.ErrNoDocuments {
@@ -186,6 +251,19 @@ func (s *Store) UpdateAPITokenLabel(ctx context.Context, userID, id, label strin
 	_, err := s.APITokens().UpdateOne(ctx,
 		bson.M{"_id": id, "user_id": userID, "revoked_at": bson.M{"$exists": false}},
 		bson.M{"$set": bson.M{"label": label}},
+	)
+	return err
+}
+
+// UpdateAPITokenFields applies any subset of {label, scope}. Used by the
+// inline edit + scope dropdown in the tokens modal.
+func (s *Store) UpdateAPITokenFields(ctx context.Context, userID, id string, set bson.M) error {
+	if len(set) == 0 {
+		return nil
+	}
+	_, err := s.APITokens().UpdateOne(ctx,
+		bson.M{"_id": id, "user_id": userID, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$set": set},
 	)
 	return err
 }

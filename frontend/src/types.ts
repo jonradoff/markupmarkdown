@@ -138,17 +138,28 @@ export interface Reply {
   updatedAt: string;
 }
 
+export type TokenScope = 'read' | 'write' | 'admin';
+
 export interface APIToken {
   id: string;
   prefix: string;
   label: string;
+  scope: TokenScope;
   createdAt: string;
+  expiresAt?: string;
   lastUsedAt?: string;
 }
 
 export interface CreatedTokenResponse {
   token: string;
   metadata: APIToken;
+}
+
+export interface TokenEvent {
+  id: string;
+  action: string;
+  documentId?: string;
+  at: string;
 }
 
 export interface Comment {

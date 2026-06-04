@@ -11,6 +11,8 @@ import type {
   MentionCandidate,
   NotificationListResponse,
   RevisionPreview,
+  TokenEvent,
+  TokenScope,
   TrashItem,
 } from "./types";
 
@@ -247,16 +249,23 @@ export const api = {
     }),
 
   listTokens: () => req<APIToken[]>("/api/me/tokens"),
-  createToken: (label: string) =>
+  createToken: (input: {
+    label: string;
+    scope: TokenScope;
+    // -1 = never expires; 0 = server default; positive = days
+    expiresInDays: number;
+  }) =>
     req<CreatedTokenResponse>("/api/me/tokens", {
       method: "POST",
-      body: JSON.stringify({ label }),
+      body: JSON.stringify(input),
     }),
-  updateToken: (id: string, label: string) =>
+  updateToken: (id: string, patch: { label?: string; scope?: TokenScope }) =>
     req<void>(`/api/me/tokens/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ label }),
+      body: JSON.stringify(patch),
     }),
   revokeToken: (id: string) =>
     req<void>(`/api/me/tokens/${id}`, { method: "DELETE" }),
+  tokenActivity: (id: string) =>
+    req<TokenEvent[]>(`/api/me/tokens/${id}/activity`),
 };

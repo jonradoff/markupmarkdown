@@ -226,6 +226,10 @@ func (a *API) patchDocument(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	// Renaming a document is admin-only via token; cookie sessions can.
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+		return
+	}
 	var req patchDocumentRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -262,6 +266,11 @@ func (a *API) deleteDocument(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	if _, accErr := a.checkDocAccess(r, id); accErr != nil {
 		a.writeAccessError(w, r, accErr)
+		return
+	}
+	// Deleting a document is admin-only via token. A read or write token
+	// should not be able to nuke documents.
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
 		return
 	}
 	// Soft delete — the doc stays in the database for ~30 days so the

@@ -231,6 +231,9 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 	if !a.enforceRate(w, r, a.rlComment, "Slow down — too many comments in a short window.") {
 		return
 	}
@@ -241,24 +244,14 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Body) == "" {
-		writeError(w, http.StatusBadRequest, "body is required")
+	body, err := ValidateCommentBody(req.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(req.Body) > maxCommentBodyLen {
-		writeError(w, http.StatusBadRequest, "comment body too long")
-		return
-	}
-	if req.Anchor.End <= req.Anchor.Start {
-		writeError(w, http.StatusBadRequest, "invalid anchor range")
-		return
-	}
-	if strings.TrimSpace(req.Anchor.Exact) == "" {
-		writeError(w, http.StatusBadRequest, "anchor.exact is required")
-		return
-	}
-	if len(req.Anchor.Exact) > maxAnchorExactLen {
-		writeError(w, http.StatusBadRequest, "anchor.exact too long")
+	req.Body = body
+	if err := ValidateAnchor(req.Anchor); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -268,7 +261,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		DocumentID: docID,
 		Anchor:     req.Anchor,
 		Author:     a.resolveAuthor(r, req.Author),
-		Body:       strings.TrimSpace(req.Body),
+		Body:       req.Body,
 		Resolved:   false,
 		Replies:    []models.Reply{},
 		CreatedAt:  now,
@@ -280,6 +273,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		c.ActorKind = actorKindFor(r)
 		if info, ok := tokenInfoFromRequest(r); ok {
 			stampAgentWrite(c, info.TokenID, info.Label)
+			a.logTokenAction(r.Context(), info.TokenID, "comment.create", docID)
 		}
 	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
@@ -294,13 +288,17 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		Comment:  c,
 		Actor:    a.currentUser(r),
 	})
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusCreated, c)
+	a.resolveAgentIdentity(r.Context(), c)
+	writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	if _, _, accErr := a.checkCommentAccess(r, id); accErr != nil {
 		a.writeAccessError(w, r, accErr)
+		return
+	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
 		return
 	}
 	capBody(w, r, maxBodyComment)
@@ -311,13 +309,9 @@ func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 	}
 	set := bson.M{}
 	if req.Body != nil {
-		body := strings.TrimSpace(*req.Body)
-		if body == "" {
-			writeError(w, http.StatusBadRequest, "body cannot be empty")
-			return
-		}
-		if len(body) > maxCommentBodyLen {
-			writeError(w, http.StatusBadRequest, "comment body too long")
+		body, err := ValidateCommentBody(*req.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		set["body"] = body
@@ -346,6 +340,9 @@ func (a *API) deleteComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+		return
+	}
 	if err := a.store.DeleteComment(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -360,6 +357,9 @@ func (a *API) resolveComment(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	if _, _, accErr := a.checkCommentAccess(r, id); accErr != nil {
 		a.writeAccessError(w, r, accErr)
+		return
+	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
 		return
 	}
 	var req resolveRequest
@@ -388,6 +388,9 @@ func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 	c, err := a.store.UpdateComment(r.Context(), id, bson.M{
 		"resolved":    false,
 		"resolved_by": "",
@@ -412,6 +415,9 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 	if !a.enforceRate(w, r, a.rlComment, "Slow down — too many replies in a short window.") {
 		return
 	}
@@ -421,13 +427,9 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	body := strings.TrimSpace(req.Body)
-	if body == "" {
-		writeError(w, http.StatusBadRequest, "body is required")
-		return
-	}
-	if len(body) > maxReplyBodyLen {
-		writeError(w, http.StatusBadRequest, "reply body too long")
+	body, err := ValidateReplyBody(req.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	now := time.Now().UTC()
@@ -444,11 +446,12 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		reply.ActorKind = actorKindFor(r)
 		if info, ok := tokenInfoFromRequest(r); ok {
 			stampAgentWriteReply(&reply, info.TokenID, info.Label)
+			a.logTokenAction(r.Context(), info.TokenID, "reply.create", parentComment.DocumentID)
 		}
 	}
-	c, err := a.store.AppendReply(r.Context(), id, reply)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	c, appendErr := a.store.AppendReply(r.Context(), id, reply)
+	if appendErr != nil {
+		writeError(w, http.StatusInternalServerError, appendErr.Error())
 		return
 	}
 	if c == nil {
@@ -464,7 +467,8 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		ReplyOf:  parentComment,
 		Actor:    a.currentUser(r),
 	})
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusCreated, c)
+	a.resolveAgentIdentity(r.Context(), c)
+	writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
@@ -474,19 +478,18 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
 	capBody(w, r, maxBodyComment)
 	var req createReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	body := strings.TrimSpace(req.Body)
-	if body == "" {
-		writeError(w, http.StatusBadRequest, "body is required")
-		return
-	}
-	if len(body) > maxReplyBodyLen {
-		writeError(w, http.StatusBadRequest, "reply body too long")
+	body, err := ValidateReplyBody(req.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	c, err := a.store.UpdateReply(r.Context(), commentID, replyID, body)
@@ -499,7 +502,8 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c)
+	writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
@@ -507,6 +511,9 @@ func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
 	replyID := mux.Vars(r)["replyId"]
 	if _, _, accErr := a.checkCommentAccess(r, commentID); accErr != nil {
 		a.writeAccessError(w, r, accErr)
+		return
+	}
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
 		return
 	}
 	c, err := a.store.DeleteReply(r.Context(), commentID, replyID)

@@ -41,6 +41,10 @@ func (a *API) initLimits() {
 	a.rlRevise = limits.NewBucket(30.0/3600.0, 1)
 	// Anthropic-key updates: 5/hour per user.
 	a.rlAPIKeyPut = limits.NewBucket(5.0/3600.0, 1)
+	// Token edits (rename / scope change): 10/hour per user. Stops a
+	// runaway tab from broadcasting comments-updated to every doc on
+	// every keystroke.
+	a.rlTokenEdit = limits.NewBucket(10.0/3600.0, 3)
 
 	// SSE: 200 total, 10 per identity. Stops idle-tab connection floods.
 	a.sseCounter = limits.NewCounter(200, 10)
