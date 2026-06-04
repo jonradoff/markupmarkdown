@@ -294,36 +294,66 @@ export default function DocumentPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // When the tab regains focus, ask the backend for a fresh source
-  // drift check (bypassing the server-side TTL) and refetch the doc
-  // metadata. Any drift fires a doc-updated SSE event that surfaces
-  // the banner without a page reload.
+  // Source-drift + access re-verification check. Fires:
+  //   • immediately on mount (covers the case Jon raised — open the doc
+  //     after a quick GitHub edit, see the banner without a manual reload)
+  //   • on window focus / visibilitychange (covers "I tabbed back")
+  //   • periodically every 2 min while the tab is visible (covers
+  //     "I keep this open all afternoon")
+  //
+  // The server returns the freshly-computed drift fields synchronously
+  // (it also busts the GitHub access caches) so we apply them straight
+  // to local state. A 401 / 403 means the user has lost access to the
+  // source repo — surface the same access-denied page as a cold load.
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    async function refreshOnFocus() {
+    async function checkSource() {
       if (!id || cancelled) return;
       try {
-        await api.checkDocumentSource(id);
-      } catch {
-        /* not GitHub-sourced or other expected failure */
-      }
-      try {
-        const d = await api.getDocument(id);
-        if (!cancelled) setDoc(d);
-      } catch {
-        /* network blip */
+        const res = await api.checkDocumentSource(id);
+        if (cancelled) return;
+        setDoc((prev) =>
+          prev
+            ? {
+                ...prev,
+                sourceSha: res.sourceSha ?? prev.sourceSha,
+                sourceLatestSha: res.sourceLatestSha ?? "",
+                sourceDriftedAt: res.sourceDriftedAt ?? undefined,
+              }
+            : prev
+        );
+      } catch (err) {
+        if (err instanceof APIError) {
+          // Lost GitHub access mid-session → render the access-denied
+          // page instead of leaving the user on a stale doc.
+          if (err.kind === "no_github_access" || err.kind === "sign_in_required") {
+            setError(err);
+          }
+        }
+        // Other errors (e.g. network blip, not-github doc) are silent.
       }
     }
+    // Immediate check on mount.
+    checkSource();
     const onFocus = () => {
-      if (document.visibilityState === "visible") refreshOnFocus();
+      if (document.visibilityState === "visible") checkSource();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
+    // Background poll: only ticks while the tab is visible. Two
+    // minutes is the upstream-notice-vs-quota sweet spot — frequent
+    // enough that a teammate's commit lands within a couple minutes,
+    // sparse enough that ten idle tabs don't burn through the
+    // anonymous GitHub rate budget (60/hr/IP).
+    const pollId = window.setInterval(() => {
+      if (document.visibilityState === "visible") checkSource();
+    }, 2 * 60 * 1000);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
+      window.clearInterval(pollId);
     };
   }, [id]);
 

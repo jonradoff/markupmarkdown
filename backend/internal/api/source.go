@@ -111,22 +111,98 @@ func (a *API) runSourceCheck(doc *models.Document, userToken string, force bool)
 }
 
 // checkSourceNow is the handler for POST /api/documents/:id/check-source
-// — bypasses the TTL so users can manually re-check. Returns the current
-// (possibly pre-check) state; the actual SHA fetch happens asynchronously
-// and any drift fires a doc-updated broadcast.
+// — runs synchronously so the response carries the freshly-computed
+// drift state. Also re-verifies GitHub access (busting the access
+// caches first) so a user removed from a private repo gets 403'd on
+// the next tab focus instead of staying in indefinitely.
 func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+
+	// Bust the access caches BEFORE checkDocAccess so the re-verification
+	// hits GitHub rather than returning a stale "still has access" hit.
+	if pre, _ := a.store.GetDocument(r.Context(), id); pre != nil {
+		if owner, repo, ref, p, ok := deriveGitHubInfo(pre); ok {
+			publicFetchCache.invalidate(owner, repo, ref, p)
+			if u := a.currentUser(r); u != nil {
+				repoAccessCache.invalidate(u.ID, owner, repo)
+			}
+		}
+	}
+
 	doc, accErr := a.checkDocAccess(r, id)
 	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
+		return
+	}
+	owner, repo, ref, p, ok := deriveGitHubInfo(doc)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sourceSha":       doc.SourceSHA,
+			"sourceLatestSha": doc.SourceLatestSHA,
+			"sourceDriftedAt": doc.SourceDriftedAt,
+		})
 		return
 	}
 	token := ""
 	if u := a.currentUser(r); u != nil {
 		token = u.AccessToken
 	}
-	a.runSourceCheck(doc, token, true)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "checking"})
+
+	// Sync SHA fetch with a short timeout so this stays responsive on
+	// tab focus. Auth'd first (works for private), anonymous as a
+	// fallback for tokenless cookie sessions.
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	sha, err := auth.FetchGitHubFileSHA(ctx, token, owner, repo, ref, p)
+	if err != nil && token != "" {
+		sha, err = auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
+	}
+	if err != nil {
+		// Can't reach GitHub — return what we have rather than 5xx.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sourceSha":       doc.SourceSHA,
+			"sourceLatestSha": doc.SourceLatestSHA,
+			"sourceDriftedAt": doc.SourceDriftedAt,
+			"checkFailed":     true,
+		})
+		return
+	}
+
+	if doc.SourceSHA == "" {
+		// Backfill the baseline for a legacy doc and return — there's
+		// nothing to compare against yet.
+		now := time.Now().UTC()
+		_, _ = a.store.Documents().UpdateOne(ctx,
+			docByIDFilter(id),
+			docSetSourceBaseline(sha, now))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sourceSha":       sha,
+			"sourceLatestSha": "",
+		})
+		return
+	}
+
+	prevDrift := doc.SourceLatestSHA != ""
+	if err := a.store.SetDocumentSourceCheck(ctx, id, sha); err != nil {
+		internalError(w, "store.set_source_check", err)
+		return
+	}
+	nowDrift := sha != doc.SourceSHA
+	if nowDrift != prevDrift {
+		a.hub.Broadcast(id, "doc-updated")
+	}
+
+	// Re-read so we return authoritative state (drift fields cleared
+	// or set per SetDocumentSourceCheck).
+	updated, _ := a.store.GetDocument(ctx, id)
+	if updated == nil {
+		updated = doc
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sourceSha":       updated.SourceSHA,
+		"sourceLatestSha": updated.SourceLatestSHA,
+		"sourceDriftedAt": updated.SourceDriftedAt,
+	})
 }
 
 // reanchor maps each comment's anchor.exact into the new content.

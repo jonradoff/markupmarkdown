@@ -97,10 +97,17 @@ export const api = {
    * possible, and flips the rest to orphan. */
   syncDocumentSource: (id: string) =>
     req<SyncSourceResponse>(`/api/documents/${id}/sync`, { method: "POST" }),
-  /** Forces an immediate upstream SHA check, bypassing the server-side
-   * TTL. Any drift fires a doc-updated broadcast over SSE. */
+  /** Forces an immediate upstream SHA check (bypasses the server-side
+   * TTL) and re-verifies GitHub access. Returns the freshly-computed
+   * drift state so the caller can update local doc state without
+   * waiting for an SSE round-trip. */
   checkDocumentSource: (id: string) =>
-    req<{ status: string }>(`/api/documents/${id}/check-source`, { method: "POST" }),
+    req<{
+      sourceSha?: string;
+      sourceLatestSha?: string;
+      sourceDriftedAt?: string;
+      checkFailed?: boolean;
+    }>(`/api/documents/${id}/check-source`, { method: "POST" }),
 
   listTrash: () => req<TrashItem[]>("/api/me/trash"),
   restoreDocument: (id: string) =>

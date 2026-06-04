@@ -228,6 +228,15 @@ var repoAccessCache = &accessCache{
 	ttl:     2 * time.Minute,
 }
 
+// invalidate drops the cached entry for the (userID, owner, repo) tuple
+// so the next check call hits GitHub. Used by the manual "check now"
+// flow so a user kicked out of a repo gets booted within a tab focus.
+func (c *accessCache) invalidate(userID, owner, repo string) {
+	c.mu.Lock()
+	delete(c.entries, repoCacheKey{userID, owner, repo})
+	c.mu.Unlock()
+}
+
 func (c *accessCache) check(ctx context.Context, userID, token, owner, repo string) (bool, error) {
 	key := repoCacheKey{userID, owner, repo}
 	c.mu.Lock()
@@ -279,6 +288,15 @@ type publicFetchCacheT struct {
 var publicFetchCache = &publicFetchCacheT{
 	entries: map[publicFetchKey]publicFetchEntry{},
 	ttl:     5 * time.Minute,
+}
+
+// invalidate drops the cached entry for the given file so the next
+// caller forces a fresh check. Used by the manual "check now" path
+// when the user might have lost access since the last cached lookup.
+func (c *publicFetchCacheT) invalidate(owner, repo, ref, path string) {
+	c.mu.Lock()
+	delete(c.entries, publicFetchKey{owner, repo, ref, path})
+	c.mu.Unlock()
 }
 
 // isPublic returns true if the file is currently reachable via the
