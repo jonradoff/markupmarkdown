@@ -70,7 +70,7 @@ fly machine (512 MB)
 └── markupmarkdown (Go binary)
     ├── /api/*           — gorilla/mux router (REST)
     ├── /mcp             — Model Context Protocol server for agents
-    ├── /skill.md        — canonical agent integration guide (also at /skill in the UI)
+    ├── /SKILL.md        — canonical agent integration guide (raw markdown)
     ├── /                — SPA from /app/web/dist
     └── MongoDB Atlas    — documents, comments, sessions, notifications, tokens
 ```
@@ -163,7 +163,7 @@ Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`
 | `resolve_comment` / `reopen_comment` | Lifecycle |
 | `revise_with_ai` | Run Claude Opus 4.7 over the doc + selected resolved threads. Preview-only by default; pass `accept: true` to save as a new child doc |
 
-The full agent guide — including conventions, identity model, rate limits, and out-of-scope actions — lives at [`skills/markupmarkdown/SKILL.md`](skills/markupmarkdown/SKILL.md) and is served live at <https://mumd.metavert.io/skill.md>. The same content is browsable in-app at `/skill`.
+The full agent guide — including conventions, identity model, rate limits, and out-of-scope actions — lives at [`skills/markupmarkdown/SKILL.md`](skills/markupmarkdown/SKILL.md) and is served live at <https://mumd.metavert.io/SKILL.md>.
 
 ### Examples
 
@@ -305,7 +305,7 @@ POST   /api/documents/:id/revise                stream — delta / done / error
 POST   /api/documents/:id/revisions             accept a previewed revision
 
 # Agent guide
-GET    /skill.md                                canonical SKILL.md (raw markdown)
+GET    /SKILL.md                                canonical SKILL.md (raw markdown; /skill.md and /skill also work)
 
 # MCP
 *      /mcp                                     streamable HTTP MCP server (Bearer auth)

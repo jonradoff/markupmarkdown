@@ -1,5 +1,3 @@
-import { Link } from "react-router-dom";
-
 export default function Footer() {
   return (
     <footer className="border-t border-rule bg-card">
@@ -17,9 +15,13 @@ export default function Footer() {
           {" · "}MIT licensed
         </div>
         <nav className="flex items-center gap-4">
-          <Link to="/skill" className="hover:text-accent" title="Agent integration guide (SKILL.md)">
+          <a
+            href="/SKILL.md"
+            className="hover:text-accent"
+            title="Agent integration guide (raw markdown)"
+          >
             SKILL.md
-          </Link>
+          </a>
           <a
             href="https://www.metavert.io/terms-of-service"
             target="_blank"

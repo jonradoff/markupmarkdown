@@ -33,8 +33,10 @@ func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Canonical SKILL.md for agents — served as plain markdown.
-	if r.URL.Path == "/skill.md" {
+	// Canonical SKILL.md for agents — served as plain markdown. We accept
+	// uppercase, lowercase, and the bare /skill alias for forgiveness, but
+	// the conventional URL is /SKILL.md.
+	if r.URL.Path == "/SKILL.md" || r.URL.Path == "/skill.md" || r.URL.Path == "/skill" {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		_, _ = w.Write([]byte(SkillMD))

@@ -172,7 +172,7 @@ export default function TokensModal({ onClose }: Props) {
       {error && <div className="text-xs text-danger mt-3">{error}</div>}
 
       <div className="text-[11px] text-faint mt-3 leading-relaxed">
-        See <a href="/skill" target="_blank" rel="noreferrer" className="text-accent hover:underline">SKILL.md</a>{" "}
+        See <a href="/SKILL.md" target="_blank" rel="noreferrer" className="text-accent hover:underline">SKILL.md</a>{" "}
         for how to wire a token into an MCP-aware agent.
       </div>
     </Modal>

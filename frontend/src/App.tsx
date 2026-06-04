@@ -1,7 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import HomePage from "./pages/Home";
 import DocumentPage from "./pages/Document";
-import SkillPage from "./pages/Skill";
 import AuthorBadge from "./components/AuthorBadge";
 import ThemeToggle from "./components/ThemeToggle";
 import NotificationBell from "./components/NotificationBell";
@@ -29,7 +28,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/d/:id" element={<DocumentPage />} />
-          <Route path="/skill" element={<SkillPage />} />
         </Routes>
       </main>
       <Footer />
