@@ -17,6 +17,7 @@ import NewCommentComposer from "../components/NewCommentComposer";
 import CommentCard from "../components/CommentCard";
 import DocumentToolbar from "../components/DocumentToolbar";
 import { FilterButton, Count } from "../components/CommentFilterButtons";
+import CommentStepNav from "../components/CommentStepNav";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
 import SignInModal from "../components/SignInModal";
@@ -894,7 +895,7 @@ export default function DocumentPage() {
               })(),
             }}
           >
-            {visibleComments.map((c) => {
+            {visibleComments.map((c, idx) => {
               const top = cardTops[c.id];
               return (
                 <div
@@ -925,6 +926,12 @@ export default function DocumentPage() {
                     onDelete={() => handleDelete(c)}
                     onEditReply={(rid, body) => handleEditReply(c, rid, body)}
                     onDeleteReply={(rid) => handleDeleteReply(c, rid)}
+                  />
+                  <CommentStepNav
+                    position={idx + 1}
+                    total={visibleComments.length}
+                    onPrev={() => stepComment(-1)}
+                    onNext={() => stepComment(1)}
                   />
                 </div>
               );
