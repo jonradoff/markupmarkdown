@@ -437,7 +437,13 @@ export default function DocumentPage() {
       });
       setComposer(null);
       applyMutation((prev) => [...prev, c]);
-      setActiveId(c.id);
+      // Mark the new thread as read in this session so the unread filter
+      // doesn't immediately surface it. Deliberately NOT setting it as
+      // the active comment: doing so triggers a window-scroll-to-
+      // highlight and a sidebar scrollIntoView, both of which yank the
+      // user off the text they just commented on. The fresh highlight
+      // colour is sufficient visual confirmation.
+      markSessionRead(c.id);
       window.getSelection()?.removeAllRanges();
       setSelection(null);
     } catch (err) {
