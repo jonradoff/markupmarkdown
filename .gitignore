@@ -11,6 +11,7 @@ backend/cmd/*/migrate-private
 .env
 .env.*
 !.env.example
+!.env.test.example
 
 # Editor
 .DS_Store
@@ -19,3 +20,10 @@ backend/cmd/*/migrate-private
 
 # Logs
 *.log
+
+# Test artifacts
+backend/coverage.out
+backend/coverage.html
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/

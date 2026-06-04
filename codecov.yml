@@ -1,0 +1,27 @@
+fixes:
+  - "markupmarkdown/::backend/"
+
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+  ignore:
+    # Entry point — wired together but not unit-testable in isolation.
+    - "backend/cmd/**"
+    # Test scaffolding shouldn't count toward its own coverage.
+    - "backend/internal/testutil/**"
+    # Embedded asset, generated content.
+    - "backend/internal/api/skill_embed.go"
+    # The SPA file-serving handler is exercised in E2E, not Go tests.
+    - "backend/internal/api/static.go"
+
+comment:
+  layout: "diff, flags, files"
+  behavior: default
+  require_changes: false

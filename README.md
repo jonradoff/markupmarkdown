@@ -1,5 +1,9 @@
 # markupmarkdown
 
+[![CI](https://github.com/jonradoff/markupmarkdown/actions/workflows/ci.yml/badge.svg)](https://github.com/jonradoff/markupmarkdown/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/jonradoff/markupmarkdown/branch/master/graph/badge.svg)](https://codecov.io/gh/jonradoff/markupmarkdown)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jonradoff/markupmarkdown)](https://goreportcard.com/report/github.com/jonradoff/markupmarkdown)
+
 **Comment on any markdown file like it's a Google Doc — and bring agents into the same review loop as your team.** Paste a URL, drag-select text, leave a margin comment. Your teammates see it in real time. Resolve the thread when you're done — or hand the resolved threads to Claude and watch it produce a clean revised version. Agents can join the same review through an MCP server: they read what humans read, leave threads humans approve, and (with explicit human sign-off) apply the resolved feedback as a new revision.
 
 Live: **<https://mumd.metavert.io/>**
@@ -328,6 +332,62 @@ GET    /SKILL.md                                canonical SKILL.md (raw markdown
 cd backend && go build ./...
 cd frontend && npx tsc --noEmit
 ```
+
+## Testing
+
+The Go backend has a unit + integration test suite that exercises the
+HTTP handlers against a real MongoDB Atlas instance. Coverage is tracked
+in Codecov with an 80% project target.
+
+### Backend
+
+```sh
+cd backend
+
+# Run the full suite (unit + integration), no coverage:
+make test
+
+# Just unit tests (no DB needed):
+make test-unit
+
+# Coverage report:
+make test-coverage           # writes coverage.out + coverage.html
+```
+
+Integration tests connect to a **separate** MongoDB database named
+`markupmarkdown-test` (configured in `backend/config/test.yaml`). The
+`internal/testutil` package hard-refuses to run if the resolved DB name
+doesn't contain `test`, so the suite physically cannot touch prod
+(`markupmarkdown`) or dev (`markupmarkdown-dev`) data. Each test starts
+from an empty database (via `DeleteMany` rather than `Drop`, to preserve
+indexes across packages).
+
+To run integration tests locally, copy `backend/.env.test.example` to
+`backend/.env.test` and fill in `MONGODB_URI`. If the URI is unset the
+integration tests are skipped (not failed) so unit-only runs are fast.
+
+### Frontend (Playwright)
+
+```sh
+cd frontend
+npm install
+npx playwright install --with-deps chromium
+npm run test:e2e
+```
+
+E2E tests live in `frontend/e2e/`. The Playwright config points at
+`http://localhost:4720` by default — start `npm run dev` (and the
+backend on port 4721) before running locally.
+
+### CI + Codecov
+
+`.github/workflows/ci.yml` runs the build, type-check, Go tests with
+coverage, and Playwright tests on every push and PR. Coverage is
+uploaded to Codecov via `CODECOV_TOKEN`. The `codecov.yml` at the repo
+root configures the 80% project target and excludes packages that are
+plumbing rather than logic (`cmd/`, `testutil/`, embedded assets, the
+SPA file server). The badges at the top of this README reflect the
+status of the latest run on `master`.
 
 ## License
 
