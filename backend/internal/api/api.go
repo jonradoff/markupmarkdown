@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"markupmarkdown/internal/config"
+	"markupmarkdown/internal/limits"
 	"markupmarkdown/internal/secrets"
 	"markupmarkdown/internal/store"
 )
@@ -17,14 +18,26 @@ type API struct {
 	store *store.Store
 	hub   *Hub
 	vault *secrets.Vault
+
+	// Rate limiters and concurrency guards (initialized in initLimits).
+	rlCreateDoc  *limits.Bucket
+	rlOAuthStart *limits.Bucket
+	rlComment    *limits.Bucket
+	rlRevise     *limits.Bucket
+	rlAPIKeyPut  *limits.Bucket
+	sseCounter   *limits.Counter
+	reviseSlots  *limits.PerKeySemaphore
+	viewQueue    chan viewEvent
 }
 
 func New(cfg *config.Config, st *store.Store) (*API, error) {
-	vault, err := secrets.NewVault(cfg.Encryption.MasterKey)
+	vault, err := secrets.NewVault(cfg.Encryption.MasterKey, cfg.Encryption.AdditionalKeys)
 	if err != nil {
 		return nil, err
 	}
-	return &API{cfg: cfg, store: st, hub: NewHub(), vault: vault}, nil
+	a := &API{cfg: cfg, store: st, hub: NewHub(), vault: vault}
+	a.initLimits()
+	return a, nil
 }
 
 func (a *API) Register(r *mux.Router) {

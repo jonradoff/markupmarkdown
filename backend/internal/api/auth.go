@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	sessionCookie = "mm_session"
-	sessionTTL    = 30 * 24 * time.Hour
+	sessionCookie  = "mm_session"
+	oauthCookie    = "mm_oauth"
+	sessionTTL     = 30 * 24 * time.Hour
+	oauthCookieTTL = 10 * time.Minute
 )
 
 // userKey is the request context key for the authenticated user.
@@ -66,19 +68,35 @@ func (a *API) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "github oauth is not configured")
 		return
 	}
+	if !a.enforceRate(w, r, a.rlOAuthStart, "Too many sign-in attempts. Try again in a minute.") {
+		return
+	}
 	state := auth.RandomToken(16)
+	cookieValue := auth.RandomToken(24)
 	redirect := r.URL.Query().Get("redirect")
 	if !isSafeRedirect(redirect) {
 		redirect = "/"
 	}
 	if err := a.store.InsertAuthState(r.Context(), &models.AuthState{
-		ID:        state,
-		Redirect:  redirect,
-		CreatedAt: time.Now().UTC(),
+		ID:          state,
+		Redirect:    redirect,
+		CookieValue: cookieValue,
+		CreatedAt:   time.Now().UTC(),
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		internalError(w, "auth.insert_state", err)
 		return
 	}
+	// Bind the state to this browser so an attacker can't trick a victim
+	// into completing a callback for the attacker's own pending login.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthCookie,
+		Value:    cookieValue,
+		Path:     "/api/auth/",
+		MaxAge:   int(oauthCookieTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, // must be Lax to survive top-level redirect
+		Secure:   strings.HasPrefix(a.cfg.Frontend.URL, "https://"),
+	})
 	http.Redirect(w, r, a.gh().AuthorizeURL(state), http.StatusFound)
 }
 
@@ -95,13 +113,29 @@ func (a *API) authCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := a.store.ConsumeAuthState(r.Context(), state)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		internalError(w, "auth.consume_state", err)
 		return
 	}
 	if st == nil {
 		writeError(w, http.StatusBadRequest, "invalid or expired state")
 		return
 	}
+	// Reject if this browser didn't initiate the flow.
+	cookie, err := r.Cookie(oauthCookie)
+	if err != nil || cookie.Value == "" || cookie.Value != st.CookieValue {
+		writeError(w, http.StatusBadRequest, "this sign-in request did not originate from your browser")
+		return
+	}
+	// One-shot cookie; clear it.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthCookie,
+		Value:    "",
+		Path:     "/api/auth/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(a.cfg.Frontend.URL, "https://"),
+	})
 
 	token, err := a.gh().ExchangeCode(r.Context(), code)
 	if err != nil {
@@ -152,7 +186,7 @@ func (a *API) authCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  sess.ExpiresAt,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		Secure:   strings.HasPrefix(a.cfg.Frontend.URL, "https://"),
 	})
 
@@ -176,7 +210,7 @@ func (a *API) authLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		Secure:   strings.HasPrefix(a.cfg.Frontend.URL, "https://"),
 	})
 	w.WriteHeader(http.StatusNoContent)

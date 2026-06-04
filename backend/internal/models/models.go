@@ -22,9 +22,10 @@ type Session struct {
 }
 
 type AuthState struct {
-	ID        string    `bson:"_id" json:"-"`
-	Redirect  string    `bson:"redirect,omitempty" json:"-"`
-	CreatedAt time.Time `bson:"created_at" json:"-"`
+	ID           string    `bson:"_id" json:"-"`
+	Redirect     string    `bson:"redirect,omitempty" json:"-"`
+	CookieValue  string    `bson:"cookie_value" json:"-"`
+	CreatedAt    time.Time `bson:"created_at" json:"-"`
 }
 
 type Document struct {

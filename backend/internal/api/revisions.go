@@ -69,6 +69,33 @@ func (a *API) previewRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate-limit: 30 revisions/hour per user (regardless of which doc).
+	if !a.rlRevise.Allow("u:" + user.ID) {
+		rate429(w, "You've reached the AI-revision rate limit (30/hour). Try again later.")
+		return
+	}
+	// At most 3 concurrent revisions per user.
+	releaseSlot := a.reviseSlots.Acquire(user.ID)
+	if releaseSlot == nil {
+		writeJSON(w, http.StatusTooManyRequests, fetchErrorResponse{
+			Error: "You already have the maximum (3) AI revisions in flight. Wait for one to finish.",
+			Kind:  "rate_limited",
+		})
+		return
+	}
+	defer releaseSlot()
+
+	// SSE connection cap.
+	releaseSSE := a.sseCounter.Acquire("u:" + user.ID)
+	if releaseSSE == nil {
+		writeJSON(w, http.StatusServiceUnavailable, fetchErrorResponse{
+			Error: "Too many open streaming connections. Close some tabs and retry.",
+			Kind:  "sse_busy",
+		})
+		return
+	}
+	defer releaseSSE()
+
 	// Pull comments. Need at least one resolved thread to do anything useful.
 	allComments, err := a.store.ListComments(r.Context(), docID)
 	if err != nil {
@@ -186,6 +213,7 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "sign in required")
 		return
 	}
+	capBody(w, r, maxBodyRevision)
 
 	var req acceptRevisionRequest
 	if err := readJSON(r, &req); err != nil {

@@ -17,6 +17,17 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap concurrent SSE connections per identity.
+	releaseSSE := a.sseCounter.Acquire(a.limitKey(r))
+	if releaseSSE == nil {
+		writeJSON(w, http.StatusServiceUnavailable, fetchErrorResponse{
+			Error: "Too many open streaming connections. Close some tabs and retry.",
+			Kind:  "sse_busy",
+		})
+		return
+	}
+	defer releaseSSE()
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")

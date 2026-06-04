@@ -53,10 +53,19 @@ func (a *API) putAnthropicKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "this server is not configured to store API keys (encryption key missing)")
 		return
 	}
+	if !a.rlAPIKeyPut.Allow("u:" + user.ID) {
+		rate429(w, "Too many key-update attempts. Try again in an hour.")
+		return
+	}
+	capBody(w, r, maxBodyAuth)
 
 	var req putAnthropicKeyRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Key) > 256 {
+		writeError(w, http.StatusBadRequest, "key is too long")
 		return
 	}
 	key := strings.TrimSpace(req.Key)

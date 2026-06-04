@@ -25,6 +25,10 @@ type EncryptionConfig struct {
 	// MasterKey is a hex-encoded 32-byte AES-256 key. Used to encrypt
 	// per-user secrets (currently just the Anthropic API key) at rest.
 	MasterKey string `yaml:"master_key"`
+	// AdditionalKeys hold prior keys accepted on Decrypt only — see
+	// secrets.Vault key-rotation docs. Keys are picked up from any env var
+	// named MARKUPMARKDOWN_ENCRYPTION_KEY_V<N>; we wire them in main.go.
+	AdditionalKeys map[string]string `yaml:"-"`
 }
 
 type GitHubConfig struct {

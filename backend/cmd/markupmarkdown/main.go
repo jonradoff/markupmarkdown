@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +18,26 @@ import (
 	"markupmarkdown/internal/config"
 	"markupmarkdown/internal/store"
 )
+
+// collectAdditionalKeys scans the environment for prior key versions:
+// MARKUPMARKDOWN_ENCRYPTION_KEY_V2, _V3, etc.
+func collectAdditionalKeys() map[string]string {
+	out := map[string]string{}
+	const prefix = "MARKUPMARKDOWN_ENCRYPTION_KEY_V"
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		k, v := kv[:eq], kv[eq+1:]
+		if !strings.HasPrefix(k, prefix) || v == "" {
+			continue
+		}
+		version := strings.ToLower(strings.TrimPrefix(k, "MARKUPMARKDOWN_ENCRYPTION_KEY_"))
+		out[version] = v
+	}
+	return out
+}
 
 func main() {
 	config.LoadEnvFile(".env")
@@ -34,6 +55,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load: %v", err)
 	}
+	// Collect any prior key versions for at-rest secret rotation.
+	cfg.Encryption.AdditionalKeys = collectAdditionalKeys()
 	log.Printf("Starting markupmarkdown [%s] (port %s)", env, cfg.Server.Port)
 
 	st, err := store.New(cfg.Database.URI, cfg.Database.Name)

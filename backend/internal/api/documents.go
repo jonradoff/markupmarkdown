@@ -16,6 +16,7 @@ import (
 
 	"markupmarkdown/internal/auth"
 	"markupmarkdown/internal/models"
+	"markupmarkdown/internal/safefetch"
 )
 
 type createDocumentRequest struct {
@@ -88,10 +89,29 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
+	if !a.enforceRate(w, r, a.rlCreateDoc, "Too many documents created in a short window. Try again in a minute.") {
+		return
+	}
+	capBody(w, r, maxBodyDocument)
+
 	var req createDocumentRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
+	}
+	if len(req.Title) > maxTitleLen {
+		writeError(w, http.StatusBadRequest, "title too long")
+		return
+	}
+	if len(req.Content) > maxUploadContent {
+		writeError(w, http.StatusBadRequest, "content too large (max 5 MB)")
+		return
+	}
+	if req.URL != "" {
+		if _, err := safefetch.ValidateURL(req.URL); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	doc := &models.Document{
@@ -166,10 +186,10 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	// Record the view so the doc shows up in the user's home-page list.
-	// Fire-and-forget — never block the response on this.
+	// Record the view via the bounded view queue so we don't fan out
+	// unbounded goroutines under load.
 	if u := a.currentUser(r); u != nil {
-		go a.store.RecordDocumentView(context.Background(), doc.ID, u.ID)
+		a.enqueueView(doc.ID, u.ID)
 	}
 	resp := documentResponse{Document: doc}
 	if doc.ParentID != "" {
@@ -210,8 +230,12 @@ func (a *API) patchDocument(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "title cannot be empty")
 			return
 		}
+		if len(title) > maxTitleLen {
+			writeError(w, http.StatusBadRequest, "title too long")
+			return
+		}
 		if err := a.store.UpdateDocumentTitle(r.Context(), id, title); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			internalError(w, "store.update_title", err)
 			return
 		}
 	}
@@ -420,15 +444,11 @@ func parseGitHubBlobURL(raw string) (owner, repo, ref, path string, ok bool) {
 }
 
 func (a *API) fetchURL(ctx context.Context, rawURL string) (string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid url: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("only http(s) urls are supported")
+	if _, err := safefetch.ValidateURL(rawURL); err != nil {
+		return "", err
 	}
 
-	client := &http.Client{Timeout: a.cfg.Fetch.ParseTimeout()}
+	client := safefetch.Client(a.cfg.Fetch.ParseTimeout())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err

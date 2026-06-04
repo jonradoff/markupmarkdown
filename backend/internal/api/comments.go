@@ -77,6 +77,10 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceRate(w, r, a.rlComment, "Slow down — too many comments in a short window.") {
+		return
+	}
+	capBody(w, r, maxBodyComment)
 
 	var req createCommentRequest
 	if err := readJSON(r, &req); err != nil {
@@ -87,12 +91,20 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body is required")
 		return
 	}
+	if len(req.Body) > maxCommentBodyLen {
+		writeError(w, http.StatusBadRequest, "comment body too long")
+		return
+	}
 	if req.Anchor.End <= req.Anchor.Start {
 		writeError(w, http.StatusBadRequest, "invalid anchor range")
 		return
 	}
 	if strings.TrimSpace(req.Anchor.Exact) == "" {
 		writeError(w, http.StatusBadRequest, "anchor.exact is required")
+		return
+	}
+	if len(req.Anchor.Exact) > maxAnchorExactLen {
+		writeError(w, http.StatusBadRequest, "anchor.exact too long")
 		return
 	}
 
@@ -125,6 +137,7 @@ func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	capBody(w, r, maxBodyComment)
 	var req patchCommentRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -135,6 +148,10 @@ func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 		body := strings.TrimSpace(*req.Body)
 		if body == "" {
 			writeError(w, http.StatusBadRequest, "body cannot be empty")
+			return
+		}
+		if len(body) > maxCommentBodyLen {
+			writeError(w, http.StatusBadRequest, "comment body too long")
 			return
 		}
 		set["body"] = body
@@ -228,6 +245,10 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	if !a.enforceRate(w, r, a.rlComment, "Slow down — too many replies in a short window.") {
+		return
+	}
+	capBody(w, r, maxBodyComment)
 	var req createReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -236,6 +257,10 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(req.Body)
 	if body == "" {
 		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if len(body) > maxReplyBodyLen {
+		writeError(w, http.StatusBadRequest, "reply body too long")
 		return
 	}
 	now := time.Now().UTC()
@@ -269,6 +294,7 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
+	capBody(w, r, maxBodyComment)
 	var req createReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -277,6 +303,10 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(req.Body)
 	if body == "" {
 		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if len(body) > maxReplyBodyLen {
+		writeError(w, http.StatusBadRequest, "reply body too long")
 		return
 	}
 	c, err := a.store.UpdateReply(r.Context(), commentID, replyID, body)
