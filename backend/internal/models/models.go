@@ -76,6 +76,30 @@ type RevisionMeta struct {
 
 // UserSecrets holds per-user encrypted credentials. One document per user.
 // Plaintext API keys never live in MongoDB.
+// NotificationKind enumerates what the user is being told about.
+type NotificationKind string
+
+const (
+	NotifyMention NotificationKind = "mention"
+	NotifyReply   NotificationKind = "reply"
+)
+
+// Notification is an in-app pulled-by-the-bell-icon record.
+type Notification struct {
+	ID             string           `bson:"_id" json:"id"`
+	UserID         string           `bson:"user_id" json:"-"`
+	Kind           NotificationKind `bson:"kind" json:"kind"`
+	DocumentID     string           `bson:"document_id" json:"documentId"`
+	DocumentTitle  string           `bson:"document_title" json:"documentTitle"`
+	CommentID      string           `bson:"comment_id" json:"commentId"`
+	ActorID        string           `bson:"actor_id" json:"-"`
+	ActorName      string           `bson:"actor_name" json:"actorName"`
+	ActorAvatarURL string           `bson:"actor_avatar_url,omitempty" json:"actorAvatarUrl,omitempty"`
+	Preview        string           `bson:"preview" json:"preview"`
+	CreatedAt      time.Time        `bson:"created_at" json:"createdAt"`
+	ReadAt         *time.Time       `bson:"read_at,omitempty" json:"readAt,omitempty"`
+}
+
 type UserSecrets struct {
 	UserID                 string    `bson:"_id" json:"-"`
 	AnthropicKeyCiphertext string    `bson:"anthropic_key_ciphertext,omitempty" json:"-"`

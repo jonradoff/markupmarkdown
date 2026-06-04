@@ -6,6 +6,8 @@ import type {
   Comment,
   DocumentSummary,
   MdDocument,
+  MentionCandidate,
+  NotificationListResponse,
   RevisionPreview,
   TrashItem,
 } from "./types";
@@ -85,6 +87,15 @@ export const api = {
   listTrash: () => req<TrashItem[]>("/api/me/trash"),
   restoreDocument: (id: string) =>
     req<{ id: string }>(`/api/documents/${id}/restore`, { method: "POST" }),
+
+  listNotifications: () =>
+    req<NotificationListResponse>("/api/me/notifications"),
+  markAllNotificationsRead: () =>
+    req<void>("/api/me/notifications/read", { method: "POST" }),
+  markNotificationRead: (id: string) =>
+    req<void>(`/api/me/notifications/${id}/read`, { method: "POST" }),
+  listMentionCandidates: (docId: string) =>
+    req<MentionCandidate[]>(`/api/documents/${docId}/mention-candidates`),
 
   listComments: (documentId: string) =>
     req<Comment[]>(`/api/documents/${documentId}/comments`),

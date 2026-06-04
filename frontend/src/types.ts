@@ -10,6 +10,30 @@ export interface DocumentSummary {
   updatedAt: string;
 }
 
+export interface NotificationItem {
+  id: string;
+  kind: "mention" | "reply";
+  documentId: string;
+  documentTitle: string;
+  commentId: string;
+  actorName: string;
+  actorAvatarUrl?: string;
+  preview: string;
+  createdAt: string;
+  readAt?: string;
+}
+
+export interface NotificationListResponse {
+  unread: number;
+  notifications: NotificationItem[];
+}
+
+export interface MentionCandidate {
+  login: string;
+  name: string;
+  avatarUrl?: string;
+}
+
 export interface TrashItem {
   id: string;
   title: string;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, APIError } from "../api";
 import ErrorBlock from "../components/ErrorBlock";
 import type { AnchorSpec } from "../utils/anchor";
@@ -32,6 +32,7 @@ export default function DocumentPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const dialog = useDialog();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showSignIn, setShowSignIn] = useState(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [showAPIKey, setShowAPIKey] = useState(false);
@@ -54,6 +55,22 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Deep-link to a specific comment via ?comment=ID (notifications use this).
+  useEffect(() => {
+    if (!doc) return;
+    const target = searchParams.get("comment");
+    if (!target) return;
+    if (comments.some((c) => c.id === target)) {
+      // Show all so the activate-and-scroll works for resolved threads too.
+      setFilter("all");
+      setActiveId(target);
+      // Clean the query string so a refresh doesn't keep re-activating.
+      const next = new URLSearchParams(searchParams);
+      next.delete("comment");
+      setSearchParams(next, { replace: true });
+    }
+  }, [doc, comments, searchParams, setSearchParams]);
 
   // Keep the browser tab title in sync with the doc. Reset on unmount.
   useEffect(() => {
@@ -704,6 +721,7 @@ export default function DocumentPage() {
           {composer && (
             <div className="mt-2">
               <NewCommentComposer
+                documentId={doc.id}
                 quotedText={composer.anchor.exact}
                 onSubmit={submitNewComment}
                 onCancel={() => setComposer(null)}

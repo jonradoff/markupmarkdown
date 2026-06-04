@@ -46,6 +46,7 @@ func (s *Store) Sessions() *mongo.Collection       { return s.db.Collection("ses
 func (s *Store) AuthStates() *mongo.Collection     { return s.db.Collection("auth_states") }
 func (s *Store) UserSecrets() *mongo.Collection    { return s.db.Collection("user_secrets") }
 func (s *Store) DocumentViews() *mongo.Collection  { return s.db.Collection("document_views") }
+func (s *Store) Notifications() *mongo.Collection  { return s.db.Collection("notifications") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -74,6 +75,80 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "last_viewed_at", Value: -1}}},
 		{Keys: bson.D{{Key: "document_id", Value: 1}}},
 	})
+	_, _ = s.Notifications().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "read_at", Value: 1}}},
+	})
+	_, _ = s.Users().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "login", Value: 1}}},
+	})
+}
+
+// Notifications
+
+func (s *Store) InsertNotification(ctx context.Context, n *models.Notification) error {
+	_, err := s.Notifications().InsertOne(ctx, n)
+	return err
+}
+
+func (s *Store) ListNotificationsForUser(ctx context.Context, userID string, limit int) ([]models.Notification, int64, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := s.Notifications().Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cur.Close(ctx)
+	var out []models.Notification
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, 0, err
+	}
+	unread, err := s.Notifications().CountDocuments(ctx, bson.M{
+		"user_id": userID,
+		"read_at": bson.M{"$exists": false},
+	})
+	if err != nil {
+		unread = 0
+	}
+	return out, unread, nil
+}
+
+func (s *Store) MarkAllNotificationsRead(ctx context.Context, userID string) error {
+	_, err := s.Notifications().UpdateMany(ctx,
+		bson.M{"user_id": userID, "read_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"read_at": time.Now().UTC()}},
+	)
+	return err
+}
+
+func (s *Store) MarkNotificationRead(ctx context.Context, userID, id string) error {
+	_, err := s.Notifications().UpdateOne(ctx,
+		bson.M{"_id": id, "user_id": userID},
+		bson.M{"$set": bson.M{"read_at": time.Now().UTC()}},
+	)
+	return err
+}
+
+// FindUsersByLogins returns user records for the supplied GitHub login set.
+// Used by mention parsing to resolve @login → user.ID.
+func (s *Store) FindUsersByLogins(ctx context.Context, logins []string) ([]models.User, error) {
+	if len(logins) == 0 {
+		return nil, nil
+	}
+	cur, err := s.Users().Find(ctx, bson.M{"login": bson.M{"$in": logins}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.User
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // RecordDocumentView upserts the (doc, user) pair with the current timestamp.

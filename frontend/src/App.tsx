@@ -3,6 +3,7 @@ import HomePage from "./pages/Home";
 import DocumentPage from "./pages/Document";
 import AuthorBadge from "./components/AuthorBadge";
 import ThemeToggle from "./components/ThemeToggle";
+import NotificationBell from "./components/NotificationBell";
 import Footer from "./components/Footer";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
             markupmarkdown
           </Link>
           <div className="flex items-center gap-3">
+            <NotificationBell />
             <ThemeToggle />
             <AuthorBadge />
           </div>

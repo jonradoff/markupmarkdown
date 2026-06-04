@@ -1,23 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import MentionInput from "./MentionInput";
 
 interface Props {
+  documentId: string;
   quotedText: string;
   onSubmit: (body: string) => Promise<void> | void;
   onCancel: () => void;
 }
 
 export default function NewCommentComposer({
+  documentId,
   quotedText,
   onSubmit,
   onCancel,
 }: Props) {
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
-  const textRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    textRef.current?.focus();
-  }, []);
 
   async function submit() {
     if (!body.trim() || busy) return;
@@ -34,20 +32,15 @@ export default function NewCommentComposer({
       <div className="text-xs text-muted mb-2 line-clamp-2 italic">
         “{quotedText}”
       </div>
-      <textarea
-        ref={textRef}
+      <MentionInput
+        documentId={documentId}
         value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            submit();
-          }
-          if (e.key === "Escape") onCancel();
-        }}
+        onChange={setBody}
+        placeholder="Add a comment… (use @ to mention)"
         rows={3}
-        placeholder="Add a comment…"
-        className="w-full text-sm border border-rule rounded p-2 resize-none focus:outline-none focus:border-accent"
+        autoFocus
+        onSubmit={submit}
+        onEscape={onCancel}
       />
       <div className="flex items-center justify-end gap-2 mt-2">
         <button

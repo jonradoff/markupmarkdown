@@ -4,6 +4,8 @@ import { colorFor, formatRelative, initials } from "../utils/format";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
 import { useDialog } from "./Dialogs";
+import RichBody from "./RichBody";
+import MentionInput from "./MentionInput";
 
 interface Props {
   comment: Comment;
@@ -164,8 +166,8 @@ export default function CommentCard({
               </div>
             </div>
           ) : (
-            <div className="text-sm text-ink whitespace-pre-wrap break-words">
-              {comment.body}
+            <div className="text-sm text-ink">
+              <RichBody body={comment.body} highlightLogin={user?.login} />
             </div>
           )}
         </div>
@@ -255,17 +257,16 @@ export default function CommentCard({
       {/* Reply composer */}
       {replyOpen && !comment.resolved && (
         <div className="mt-3 pl-9" onClick={(e) => e.stopPropagation()}>
-          <textarea
-            autoFocus
+          <MentionInput
+            documentId={comment.documentId}
             value={replyBody}
-            onChange={(e) => setReplyBody(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleReply();
-              if (e.key === "Escape") setReplyOpen(false);
-            }}
+            onChange={setReplyBody}
+            placeholder="Reply… (use @ to mention)"
             rows={2}
-            placeholder="Reply…"
-            className="w-full text-sm border border-rule rounded p-1.5 focus:outline-none focus:border-accent"
+            autoFocus
+            onSubmit={handleReply}
+            onEscape={() => setReplyOpen(false)}
+            className="w-full text-sm border border-rule rounded p-1.5 resize-none focus:outline-none focus:border-accent"
           />
           <div className="flex justify-end gap-2 mt-1">
             <button
@@ -350,8 +351,8 @@ function ReplyRow({
             </div>
           </>
         ) : (
-          <div className="text-sm whitespace-pre-wrap break-words">
-            {reply.body}
+          <div className="text-sm">
+            <RichBody body={reply.body} />
           </div>
         )}
         {mine && !editing && (

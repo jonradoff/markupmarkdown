@@ -73,7 +73,8 @@ func (a *API) listComments(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 	docID := mux.Vars(r)["id"]
-	if _, accErr := a.checkDocAccess(r, docID); accErr != nil {
+	doc, accErr := a.checkDocAccess(r, docID)
+	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
@@ -129,6 +130,13 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(docID, "comments-updated")
+	a.fanOutCommentNotifications(fanOutInput{
+		DocID:    docID,
+		DocTitle: doc.Title,
+		Body:     c.Body,
+		Comment:  c,
+		Actor:    a.currentUser(r),
+	})
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -242,7 +250,8 @@ func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	if _, _, accErr := a.checkCommentAccess(r, id); accErr != nil {
+	parentComment, doc, accErr := a.checkCommentAccess(r, id)
+	if accErr != nil {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
@@ -286,6 +295,14 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
+	a.fanOutCommentNotifications(fanOutInput{
+		DocID:    c.DocumentID,
+		DocTitle: doc.Title,
+		Body:     body,
+		Comment:  c,
+		ReplyOf:  parentComment,
+		Actor:    a.currentUser(r),
+	})
 	writeJSON(w, http.StatusCreated, c)
 }
 
