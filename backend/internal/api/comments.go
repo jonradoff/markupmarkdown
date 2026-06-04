@@ -161,7 +161,7 @@ func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comm
 		}
 	}
 
-	overlay := func(actor models.ActorKind, tid, uid string, author, ownerName, ownerLogin *string) {
+	overlay := func(actor models.ActorKind, tid, uid string, author, ownerName, ownerLogin, avatarURL *string) {
 		if actor != models.ActorAgent {
 			return
 		}
@@ -172,15 +172,17 @@ func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comm
 			*ownerName = preferName(u)
 			*ownerLogin = u.Login
 		}
+		// Agents render with a fixed bot glyph regardless of stored
+		// avatar. Clear ONLY here, not for human comments — that bug
+		// stripped GitHub avatars from real users.
+		*avatarURL = ""
 	}
 	for i := range comments {
 		overlay(comments[i].ActorKind, comments[i].TokenID, comments[i].AuthorID,
-			&comments[i].Author, &comments[i].OwnerName, &comments[i].OwnerLogin)
-		comments[i].AuthorAvatarURL = ""
+			&comments[i].Author, &comments[i].OwnerName, &comments[i].OwnerLogin, &comments[i].AuthorAvatarURL)
 		for j := range comments[i].Replies {
 			overlay(comments[i].Replies[j].ActorKind, comments[i].Replies[j].TokenID, comments[i].Replies[j].AuthorID,
-				&comments[i].Replies[j].Author, &comments[i].Replies[j].OwnerName, &comments[i].Replies[j].OwnerLogin)
-			comments[i].Replies[j].AuthorAvatarURL = ""
+				&comments[i].Replies[j].Author, &comments[i].Replies[j].OwnerName, &comments[i].Replies[j].OwnerLogin, &comments[i].Replies[j].AuthorAvatarURL)
 		}
 	}
 }

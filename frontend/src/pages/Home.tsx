@@ -73,10 +73,29 @@ export default function HomePage() {
     setBusy(true);
     setError(null);
     try {
-      const doc = await api.createFromURL(url.trim());
-      navigate(`/d/${doc.id}`);
+      const result = await api.createFromURL(url.trim());
+      // Self-doc redirect: the user pasted one of our own doc URLs;
+      // navigate to it instead of cloning the SPA HTML.
+      if ("kind" in result && result.kind === "self_doc_redirect") {
+        navigate(result.redirect);
+        return;
+      }
+      navigate(`/d/${(result as { id: string }).id}`);
     } catch (err) {
-      setErrFrom(err);
+      // not_markdown errors get a dedicated, more explanatory dialog so
+      // users understand what went wrong (especially after pasting
+      // google.com or similar).
+      if (err instanceof APIError && err.kind === "not_markdown") {
+        await dialog.alert({
+          title: "That doesn't look like a markdown file",
+          body:
+            "markupmarkdown is for commenting on `.md` documents — not for editing arbitrary web pages.\n\n" +
+            "Try a raw .md URL: e.g. a GitHub raw file, a docs site that serves Markdown, or upload a local file below.",
+          confirmLabel: "Got it",
+        });
+      } else {
+        setErrFrom(err);
+      }
     } finally {
       setBusy(false);
     }

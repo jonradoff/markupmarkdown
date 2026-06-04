@@ -24,6 +24,7 @@ import ShareModal from "../components/ShareModal";
 import { useDialog } from "../components/Dialogs";
 import { useToast, toastMessageFor } from "../components/Toast";
 import { useSessionReadIds } from "../utils/sessionReadIds";
+import { relaxAnchors } from "../utils/anchoredLayout";
 import { formatRelative } from "../utils/format";
 import { downloadAsMarkdown } from "../utils/download";
 
@@ -70,6 +71,12 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  // Refs to each rendered CommentCard wrapper, so we can measure their
+  // heights for the anchored-layout solver.
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Map of commentId → top in px, applied as style.top on the wrapper.
+  // Recomputed whenever highlights move or comments change.
+  const [cardTops, setCardTops] = useState<Record<string, number>>({});
 
   // Deep-link to a specific comment via ?comment=ID (notifications use this).
   useEffect(() => {
@@ -186,6 +193,53 @@ export default function DocumentPage() {
       if (contentRef.current) unwrapHighlights(contentRef.current);
     };
   }, [doc, comments, activeId, filter]);
+
+  // Anchor comment cards vertically to their highlighted spans. We
+  // measure each highlight's top relative to the sidebar's scroll
+  // container, then run a relaxation pass so overlapping anchors push
+  // each other down with a constant gap. The cards live in a
+  // position: relative container; we set style.top per card.
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    const sidebar = sidebarRef.current;
+    if (!content || !sidebar) return;
+    // sidebar.scrollTop accounts for the user's scroll within the
+    // sidebar; content.getBoundingClientRect().top minus
+    // sidebar.getBoundingClientRect().top normalizes to sidebar-local
+    // coordinates.
+    const sbBox = sidebar.getBoundingClientRect();
+    const items = visibleComments
+      .map((c) => {
+        const rect = getHighlightRect(content, c.id);
+        if (!rect) return null;
+        const wrapper = cardRefs.current[c.id];
+        const height = wrapper?.offsetHeight ?? 120;
+        // Target the top of the highlight, in sidebar-local coords.
+        return {
+          id: c.id,
+          desiredTop: rect.top - sbBox.top + sidebar.scrollTop,
+          height,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
+    if (items.length === 0) {
+      setCardTops({});
+      return;
+    }
+    setCardTops(relaxAnchors(items, 12));
+  }, [doc, comments, activeId, filter, cardTops.__rerun__]);
+
+  // Trigger a re-measure when the window resizes (column widths change
+  // → highlight Y positions change). We bump a no-op counter on the
+  // cardTops map; the effect above re-reads getHighlightRect.
+  useEffect(() => {
+    const onResize = () => {
+      setCardTops((prev) => ({ ...prev, __rerun__: Date.now() } as Record<string, number>));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // Click on a highlighted span -> activate that comment
   useEffect(() => {
@@ -361,11 +415,29 @@ export default function DocumentPage() {
     if (!selection) return;
     const sel = selection;
     withIdentity(() => {
+      // Translate the popover's window-space Y into sidebar-local
+      // coordinates so the composer card lands beside the highlighted
+      // span instead of at the top of the list.
+      const sb = sidebarRef.current;
+      let y = sel.popY + window.scrollY;
+      if (sb) {
+        const sbBox = sb.getBoundingClientRect();
+        y = sel.popY - sbBox.top + sb.scrollTop;
+      }
       setComposer({
         anchor: sel.anchor,
-        y: sel.popY + window.scrollY,
+        y,
       });
       setSelection(null);
+      // Scroll the sidebar so the composer is visible.
+      if (sb) {
+        requestAnimationFrame(() => {
+          sb.scrollTo({
+            top: Math.max(0, y - 80),
+            behavior: "smooth",
+          });
+        });
+      }
     });
   }
 
@@ -824,50 +896,101 @@ export default function DocumentPage() {
           )}
         </div>
 
-        <div className="p-3 space-y-2">
-          {visibleComments.length === 0 ? (
-            <div className="text-sm text-muted text-center py-8 px-4">
-              {filter === "open"
-                ? "No open comments. Select any text in the doc to add one."
-                : filter === "resolved"
-                  ? "No resolved comments yet."
-                  : "Nothing here yet."}
-            </div>
-          ) : (
-            visibleComments.map((c) => (
-              <CommentCard
-                key={c.id}
-                comment={c}
-                active={activeId === c.id}
-                me={me}
-                requireIdentity={withIdentity}
-                onActivate={() => setActiveId(c.id)}
-                onResolve={() =>
-                  new Promise<void>((resolve) =>
-                    withIdentity(() => handleResolve(c).then(resolve))
-                  )
+        {visibleComments.length === 0 ? (
+          <div className="relative p-3 min-h-[200px]">
+            {!composer && (
+              <div className="text-sm text-muted text-center py-8 px-4">
+                {filter === "open"
+                  ? "No open comments. Select any text in the doc to add one."
+                  : filter === "resolved"
+                    ? "No resolved comments yet."
+                    : "Nothing here yet."}
+              </div>
+            )}
+            {composer && (
+              <div
+                className="absolute left-3 right-3"
+                style={{ top: composer.y }}
+              >
+                <NewCommentComposer
+                  documentId={doc.id}
+                  quotedText={composer.anchor.exact}
+                  onSubmit={submitNewComment}
+                  onCancel={() => setComposer(null)}
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          // Anchored layout: cards are absolutely positioned so they
+          // align vertically with their highlight in the doc. We give
+          // the container an explicit min-height covering the lowest
+          // card so it scrolls naturally.
+          <div
+            className="relative px-3 pb-6"
+            style={{
+              minHeight: (() => {
+                let h = 0;
+                for (const c of visibleComments) {
+                  const top = cardTops[c.id] ?? 0;
+                  const wrap = cardRefs.current[c.id];
+                  const bot = top + (wrap?.offsetHeight ?? 120);
+                  if (bot > h) h = bot;
                 }
-                onReopen={() => handleReopen(c)}
-                onReply={(body) => handleReply(c, body)}
-                onEdit={(body) => handleEdit(c, body)}
-                onDelete={() => handleDelete(c)}
-                onEditReply={(rid, body) => handleEditReply(c, rid, body)}
-                onDeleteReply={(rid) => handleDeleteReply(c, rid)}
-              />
-            ))
-          )}
-
-          {composer && (
-            <div className="mt-2">
-              <NewCommentComposer
-                documentId={doc.id}
-                quotedText={composer.anchor.exact}
-                onSubmit={submitNewComment}
-                onCancel={() => setComposer(null)}
-              />
-            </div>
-          )}
-        </div>
+                return h + 24;
+              })(),
+            }}
+          >
+            {visibleComments.map((c) => {
+              const top = cardTops[c.id];
+              return (
+                <div
+                  key={c.id}
+                  ref={(el) => {
+                    cardRefs.current[c.id] = el;
+                  }}
+                  className="absolute left-3 right-3 transition-[top] duration-150"
+                  style={{
+                    top: top ?? 0,
+                    visibility: top == null ? "hidden" : "visible",
+                  }}
+                >
+                  <CommentCard
+                    comment={c}
+                    active={activeId === c.id}
+                    me={me}
+                    requireIdentity={withIdentity}
+                    onActivate={() => setActiveId(c.id)}
+                    onResolve={() =>
+                      new Promise<void>((resolve) =>
+                        withIdentity(() => handleResolve(c).then(resolve))
+                      )
+                    }
+                    onReopen={() => handleReopen(c)}
+                    onReply={(body) => handleReply(c, body)}
+                    onEdit={(body) => handleEdit(c, body)}
+                    onDelete={() => handleDelete(c)}
+                    onEditReply={(rid, body) => handleEditReply(c, rid, body)}
+                    onDeleteReply={(rid) => handleDeleteReply(c, rid)}
+                  />
+                </div>
+              );
+            })}
+            {composer && (
+              <div
+                className="absolute left-3 right-3"
+                style={{ top: composer.y }}
+              >
+                <NewCommentComposer
+                  documentId={doc.id}
+                  quotedText={composer.anchor.exact}
+                  onSubmit={submitNewComment}
+                  onCancel={() => setComposer(null)}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </aside>
 
       {/* Floating selection popover */}

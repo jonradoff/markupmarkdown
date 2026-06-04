@@ -11,6 +11,7 @@ import type {
   MentionCandidate,
   NotificationListResponse,
   RevisionPreview,
+  SelfDocRedirect,
   TokenEvent,
   TokenScope,
   TrashItem,
@@ -70,8 +71,11 @@ export const api = {
 
   listDocuments: () => req<DocumentSummary[]>("/api/documents"),
   getDocument: (id: string) => req<MdDocument>(`/api/documents/${id}`),
+  // createFromURL can either return a Document (cloned) or a redirect
+  // instruction if the user pasted a markupmarkdown doc URL. The caller
+  // checks `kind === "self_doc_redirect"` to decide which branch to take.
   createFromURL: (url: string, title?: string) =>
-    req<MdDocument>("/api/documents", {
+    req<MdDocument | SelfDocRedirect>("/api/documents", {
       method: "POST",
       body: JSON.stringify({ url, title }),
     }),

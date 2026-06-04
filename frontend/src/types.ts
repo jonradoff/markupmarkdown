@@ -90,6 +90,15 @@ export interface AnthropicKeyStatus {
   enabled: boolean;
 }
 
+// SelfDocRedirect is returned by POST /api/documents when the user
+// pastes a markupmarkdown doc URL into the URL field. The frontend
+// navigates to `redirect` instead of trying to render a clone.
+export interface SelfDocRedirect {
+  kind: "self_doc_redirect";
+  redirect: string;
+  documentId: string;
+}
+
 export interface RevisionPreview {
   originalContent: string;
   revisedContent: string;

@@ -113,8 +113,25 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.URL != "" {
+		// Strip sentence-terminator punctuation the user may have caught
+		// when copy-pasting a URL out of an email or chat. Without this,
+		// we end up storing the period as part of the source URL (and
+		// the title), which renders as a broken hyperlink on /d/:id.
+		req.URL = trimURLPunctuation(req.URL)
 		if _, err := safefetch.ValidateURL(req.URL); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// If the user pasted a markupmarkdown doc URL into the URL field,
+		// just redirect them to that doc instead of cloning the SPA HTML.
+		// We surface this as a structured response the frontend can act
+		// on (navigate to /d/:id) rather than as a 201.
+		if id := a.selfDocPath(req.URL); id != "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"redirect":   "/d/" + id,
+				"kind":       "self_doc_redirect",
+				"documentId": id,
+			})
 			return
 		}
 	}
@@ -132,6 +149,17 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 		fetched, err := a.fetchContent(r.Context(), r, req.URL)
 		if err != nil {
 			a.writeFetchError(w, r, req.URL, err)
+			return
+		}
+		// Reject obvious non-markdown content (HTML pages, JS bundles,
+		// SVG) before we save anything. This is a friendlier failure
+		// than letting users open a "Google homepage" doc.
+		if !looksLikeMarkdown(fetched.Content, req.URL) {
+			writeJSON(w, http.StatusBadRequest, fetchErrorResponse{
+				Error:  "That URL doesn't look like a markdown file. markupmarkdown is for commenting on .md documents — not for editing arbitrary web pages.",
+				Kind:   "not_markdown",
+				Detail: "We fetched the URL but the content appears to be HTML, JavaScript, or another non-markdown format. Try a raw .md URL (e.g. GitHub raw or a docs site that serves Markdown).",
+			})
 			return
 		}
 		doc.Content = fetched.Content
@@ -607,6 +635,24 @@ func normalizeGitHubURL(raw string) string {
 	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, rest)
 }
 
+// trimURLPunctuation strips sentence-terminator characters from the end
+// of a user-pasted URL. We trim everything in the closing-bracket /
+// punctuation set that's almost never legitimately the last character
+// of a real URL.
+func trimURLPunctuation(raw string) string {
+	raw = strings.TrimSpace(raw)
+	for len(raw) > 0 {
+		last := raw[len(raw)-1]
+		switch last {
+		case '.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\'':
+			raw = raw[:len(raw)-1]
+		default:
+			return raw
+		}
+	}
+	return raw
+}
+
 func titleFromURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -617,4 +663,108 @@ func titleFromURL(raw string) string {
 		return raw
 	}
 	return base
+}
+
+// looksLikeMarkdown returns true if the fetched content looks like
+// markdown (or plain text we're willing to treat as markdown), and false
+// if it looks like HTML, JavaScript, JSON, or a binary blob.
+//
+// This is intentionally a sniff, not a strict mime check — many GitHub
+// raw URLs come back as text/plain with no extension, and we still want
+// to accept those.
+func looksLikeMarkdown(content, sourceURL string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	low := strings.ToLower(trimmed)
+
+	// Clear-cut rejects: HTML / SVG / XML preambles, anything that's
+	// obviously a web page rather than a document.
+	for _, p := range []string{
+		"<!doctype html",
+		"<html",
+		"<?xml",
+		"<svg",
+	} {
+		if strings.HasPrefix(low, p) {
+			return false
+		}
+	}
+	// Embedded <script> / <head> very early suggests this is a rendered
+	// HTML page rather than a doc with incidental tags.
+	head := low
+	if len(head) > 2048 {
+		head = head[:2048]
+	}
+	if strings.Contains(head, "<script") && strings.Contains(head, "</script>") {
+		return false
+	}
+	if strings.Contains(head, "<head>") && strings.Contains(head, "</head>") {
+		return false
+	}
+
+	// Accept anything whose URL ends in .md / .markdown / .txt — even if
+	// the content sniff would otherwise be ambiguous.
+	if u, err := url.Parse(sourceURL); err == nil {
+		p := strings.ToLower(u.Path)
+		for _, ext := range []string{".md", ".markdown", ".mdx", ".txt"} {
+			if strings.HasSuffix(p, ext) {
+				return true
+			}
+		}
+	}
+
+	// Fallback heuristic: a markdown doc almost always has SOME of these
+	// near the top — a heading, a list marker, a fence, a link/image, or
+	// a blank line followed by prose. If we see none of that, we err on
+	// the side of rejecting (better to ask than to clone a JS file).
+	for _, marker := range []string{
+		"# ", "## ", "### ",
+		"* ", "- ", "1. ",
+		"```",
+		"](", // markdown link
+		"![", // markdown image
+		"> ", // blockquote
+	} {
+		if strings.Contains(head, marker) {
+			return true
+		}
+	}
+	// Last resort: if it's clearly text (no NUL bytes, mostly printable),
+	// allow it.
+	if !strings.ContainsRune(trimmed, 0) {
+		return true
+	}
+	return false
+}
+
+// selfDocPath returns the doc UUID if `raw` looks like a markupmarkdown
+// /d/:id URL on our own host. Used to redirect the user to the existing
+// doc instead of cloning the SPA's HTML page when they paste their own
+// markupmarkdown URL into the URL field.
+func (a *API) selfDocPath(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	frontHost := ""
+	if fu, err := url.Parse(a.cfg.Frontend.URL); err == nil {
+		frontHost = fu.Hostname()
+	}
+	// Match either the configured frontend hostname or the Fly-default
+	// markupmarkdown.fly.dev (since that's the canonical fallback).
+	if host != frontHost && host != "markupmarkdown.fly.dev" {
+		return ""
+	}
+	// Path is /d/<id>; tolerate trailing slash + ignore any query/fragment.
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 2 || parts[0] != "d" {
+		return ""
+	}
+	return parts[1]
 }
