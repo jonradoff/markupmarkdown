@@ -71,12 +71,19 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  const topHeaderRef = useRef<HTMLDivElement>(null);
+  const navBarRef = useRef<HTMLDivElement>(null);
   // Refs to each rendered CommentCard wrapper, so we can measure their
   // heights for the anchored-layout solver.
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   // Map of commentId → top in px, applied as style.top on the wrapper.
   // Recomputed whenever highlights move or comments change.
   const [cardTops, setCardTops] = useState<Record<string, number>>({});
+  // Measured heights of the two sticky bars at the top of the sidebar,
+  // used to (a) offset the Prev/Next bar from the header and (b) push
+  // the first anchored card below them so it never starts hidden.
+  const [topHeaderH, setTopHeaderH] = useState(0);
+  const [navBarH, setNavBarH] = useState(0);
 
   // Deep-link to a specific comment via ?comment=ID (notifications use this).
   useEffect(() => {
@@ -227,8 +234,17 @@ export default function DocumentPage() {
       setCardTops({});
       return;
     }
-    setCardTops(relaxAnchors(items, 12));
-  }, [doc, comments, activeId, filter, cardTops.__rerun__]);
+    // Enforce a minimum top so no card starts hidden behind the
+    // floating Prev/Next bar. The bars are sticky to the SCROLL
+    // viewport, but the anchored container's coordinate space is
+    // sidebar-local — so we just add enough top padding for the bars
+    // to clear the first card.
+    const minTop = topHeaderH + navBarH + 8;
+    const padded = items.map((it) =>
+      it.desiredTop < minTop ? { ...it, desiredTop: minTop } : it
+    );
+    setCardTops(relaxAnchors(padded, 12));
+  }, [doc, comments, activeId, filter, cardTops.__rerun__, topHeaderH, navBarH]);
 
   // Trigger a re-measure when the window resizes (column widths change
   // → highlight Y positions change). We bump a no-op counter on the
@@ -240,6 +256,25 @@ export default function DocumentPage() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // Measure the two sticky bars at the top of the sidebar with a
+  // ResizeObserver so we always know the current header/nav-bar
+  // heights — used to (a) offset the Prev/Next bar from the header
+  // and (b) push the first anchored card below them so it never
+  // starts hidden.
+  useEffect(() => {
+    const measure = () => {
+      const h1 = topHeaderRef.current?.getBoundingClientRect().height ?? 0;
+      const h2 = navBarRef.current?.getBoundingClientRect().height ?? 0;
+      setTopHeaderH(Math.round(h1));
+      setNavBarH(Math.round(h2));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (topHeaderRef.current) ro.observe(topHeaderRef.current);
+    if (navBarRef.current) ro.observe(navBarRef.current);
+    return () => ro.disconnect();
+  }, [doc]);
 
   // Click on a highlighted span -> activate that comment
   useEffect(() => {
@@ -424,16 +459,20 @@ export default function DocumentPage() {
         const sbBox = sb.getBoundingClientRect();
         y = sel.popY - sbBox.top + sb.scrollTop;
       }
+      // Don't let the composer start under the floating sticky bars.
+      const minY = topHeaderH + navBarH + 8;
+      if (y < minY) y = minY;
       setComposer({
         anchor: sel.anchor,
         y,
       });
       setSelection(null);
-      // Scroll the sidebar so the composer is visible.
+      // Scroll the sidebar so the composer is visible (with the
+      // floating bars subtracted so it's not jammed against them).
       if (sb) {
         requestAnimationFrame(() => {
           sb.scrollTo({
-            top: Math.max(0, y - 80),
+            top: Math.max(0, y - topHeaderH - navBarH - 16),
             behavior: "smooth",
           });
         });
@@ -834,7 +873,12 @@ export default function DocumentPage() {
         ref={sidebarRef}
         className="w-96 shrink-0 border-l border-rule bg-card overflow-y-auto"
       >
-        <div className="sticky top-0 z-10 bg-card border-b border-rule">
+        {/* Top header: All docs link + filter pills. Sticks at the top
+            of the sidebar so it's always reachable. */}
+        <div
+          ref={topHeaderRef}
+          className="sticky top-0 z-20 bg-card border-b border-rule"
+        >
           <div className="px-4 py-3 flex items-center gap-2">
             <Link to="/" className="text-sm text-muted hover:text-accent">
               ← All docs
@@ -867,14 +911,26 @@ export default function DocumentPage() {
               </FilterButton>
             </div>
           </div>
-          {visibleComments.length > 0 && (
-            <div className="px-4 pb-2 -mt-1 flex items-center gap-2 text-xs">
+        </div>
+
+        {/* Prev/Next: its own sticky bar that floats above the
+            anchored comment cards. Stays visible no matter how far
+            down the user has scrolled. Higher z-index than the cards
+            (which are absolutely positioned with default z=0) so it
+            never gets clipped. */}
+        {visibleComments.length > 0 && (
+          <div
+            ref={navBarRef}
+            className="sticky z-30 bg-card/95 backdrop-blur-sm border-b border-rule shadow-sm"
+            style={{ top: topHeaderH }}
+          >
+            <div className="px-4 py-2 flex items-center gap-2 text-xs">
               <button
                 onClick={() => stepComment(-1)}
                 title="Previous comment (k or ↑)"
-                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft font-medium"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="15 18 9 12 15 6" />
                 </svg>
                 Prev
@@ -882,10 +938,10 @@ export default function DocumentPage() {
               <button
                 onClick={() => stepComment(1)}
                 title="Next comment (j or ↓)"
-                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+                className="flex items-center gap-1 px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft font-medium"
               >
                 Next
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
               </button>
@@ -893,8 +949,8 @@ export default function DocumentPage() {
                 {activeIndex >= 0 ? activeIndex + 1 : "—"} of {visibleComments.length}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {visibleComments.length === 0 ? (
           <div className="relative p-3 min-h-[200px]">
