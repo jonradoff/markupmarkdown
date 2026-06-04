@@ -22,9 +22,9 @@
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.50.0",
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "^4.0.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.19",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
