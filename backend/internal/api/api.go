@@ -83,6 +83,7 @@ func (a *API) Register(r *mux.Router) {
 
 	r.HandleFunc("/api/me/tokens", a.listTokens).Methods("GET")
 	r.HandleFunc("/api/me/tokens", a.createToken).Methods("POST")
+	r.HandleFunc("/api/me/tokens/{id}", a.updateToken).Methods("PATCH")
 	r.HandleFunc("/api/me/tokens/{id}", a.revokeToken).Methods("DELETE")
 }
 

@@ -232,9 +232,3 @@ func (a *API) fanOutCommentNotifications(in fanOutInput) {
 	}()
 }
 
-func preferName(u *models.User) string {
-	if u.Name != "" {
-		return u.Name
-	}
-	return u.Login
-}

@@ -128,6 +128,14 @@ func (s *Store) ListAPITokensForUser(ctx context.Context, userID string) ([]mode
 	return out, nil
 }
 
+func (s *Store) UpdateAPITokenLabel(ctx context.Context, userID, id, label string) error {
+	_, err := s.APITokens().UpdateOne(ctx,
+		bson.M{"_id": id, "user_id": userID, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"label": label}},
+	)
+	return err
+}
+
 func (s *Store) RevokeAPIToken(ctx context.Context, userID, id string) error {
 	_, err := s.APITokens().UpdateOne(ctx,
 		bson.M{"_id": id, "user_id": userID},

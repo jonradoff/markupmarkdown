@@ -247,10 +247,15 @@ export const api = {
     }),
 
   listTokens: () => req<APIToken[]>("/api/me/tokens"),
-  createToken: (label: string, isAgent: boolean) =>
+  createToken: (label: string) =>
     req<CreatedTokenResponse>("/api/me/tokens", {
       method: "POST",
-      body: JSON.stringify({ label, isAgent }),
+      body: JSON.stringify({ label }),
+    }),
+  updateToken: (id: string, label: string) =>
+    req<void>(`/api/me/tokens/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label }),
     }),
   revokeToken: (id: string) =>
     req<void>(`/api/me/tokens/${id}`, { method: "DELETE" }),

@@ -24,12 +24,12 @@ import (
 // API is the subset of the api.API surface we lean on. Defined as an
 // interface so we don't pull api into mcpserver's import graph.
 type API interface {
-	UserFromBearer(ctx context.Context, token string) (*models.User, bool, error)
+	UserFromBearer(ctx context.Context, token string) (user *models.User, label string, err error)
 	DocAccess(ctx context.Context, userID, docID string, accessToken string) (*models.Document, error)
 	ListDocumentsForUser(ctx context.Context, userID string, includeTrash bool) ([]models.Document, error)
 	ListComments(ctx context.Context, docID string) ([]models.Comment, error)
-	CreateComment(ctx context.Context, userID, docID, body, quotedText string, occurrence int, isAgent bool) (*models.Comment, error)
-	ReplyToComment(ctx context.Context, userID, commentID, body string, isAgent bool) (*models.Comment, error)
+	CreateComment(ctx context.Context, userID, docID, body, quotedText string, occurrence int, agentLabel string) (*models.Comment, error)
+	ReplyToComment(ctx context.Context, userID, commentID, body, agentLabel string) (*models.Comment, error)
 	ResolveComment(ctx context.Context, userID, commentID string, reopen bool) (*models.Comment, error)
 	ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool) (*RevisionOutput, error)
 }
@@ -77,12 +77,12 @@ func wrapAuth(next http.Handler, a API) http.Handler {
 			return
 		}
 		tok := strings.TrimSpace(h[7:])
-		user, isAgent, err := a.UserFromBearer(r.Context(), tok)
+		user, label, err := a.UserFromBearer(r.Context(), tok)
 		if err != nil || user == nil {
 			http.Error(w, `{"error":"invalid or revoked token"}`, http.StatusUnauthorized)
 			return
 		}
-		ctx := withAuthIdentity(r.Context(), authIdentity{User: user, IsAgent: isAgent})
+		ctx := withAuthIdentity(r.Context(), authIdentity{User: user, Label: label})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -95,8 +95,8 @@ type handlers struct {
 // --- identity plumbing ---
 
 type authIdentity struct {
-	User    *models.User
-	IsAgent bool
+	User  *models.User
+	Label string
 }
 type authKey struct{}
 
@@ -260,7 +260,7 @@ func (h *handlers) addComment(ctx context.Context, req mcp.CallToolRequest) (*mc
 	if docID == "" || quoted == "" || body == "" {
 		return errorResult("`document_id`, `quoted_text`, and `body` are required")
 	}
-	c, err := h.api.CreateComment(ctx, id.User.ID, docID, body, quoted, occ, id.IsAgent)
+	c, err := h.api.CreateComment(ctx, id.User.ID, docID, body, quoted, occ, id.Label)
 	if err != nil {
 		return errorResult("add failed: %v", err)
 	}
@@ -282,7 +282,7 @@ func (h *handlers) reply(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	if cid == "" || body == "" {
 		return errorResult("`comment_id` and `body` are required")
 	}
-	c, err := h.api.ReplyToComment(ctx, id.User.ID, cid, body, id.IsAgent)
+	c, err := h.api.ReplyToComment(ctx, id.User.ID, cid, body, id.Label)
 	if err != nil {
 		return errorResult("reply failed: %v", err)
 	}

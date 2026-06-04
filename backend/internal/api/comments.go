@@ -34,13 +34,43 @@ type resolveRequest struct {
 
 const anonymous = "Anonymous"
 
-// actorKindFor reads the auth source from the request: API token marked
-// IsAgent → agent; otherwise human.
+// actorKindFor reads the auth source from the request. Any Bearer-token
+// request is treated as agent-authored; cookie sessions are human.
 func actorKindFor(r *http.Request) models.ActorKind {
-	if info, ok := tokenInfoFromRequest(r); ok && info.IsAgent {
+	if _, ok := tokenInfoFromRequest(r); ok {
 		return models.ActorAgent
 	}
 	return models.ActorHuman
+}
+
+// applyAgentIdentity rewrites c.Author / c.AuthorAvatarURL with the bot's
+// identity (token label) and stamps the accountable human as Owner. Called
+// when the create request came through an agent-flagged token.
+func applyAgentIdentity(c *models.Comment, owner *models.User, label string) {
+	c.Author = label
+	c.AuthorAvatarURL = ""
+	c.OwnerName = preferName(owner)
+	if owner != nil {
+		c.OwnerLogin = owner.Login
+	}
+}
+func applyAgentIdentityReply(r *models.Reply, owner *models.User, label string) {
+	r.Author = label
+	r.AuthorAvatarURL = ""
+	r.OwnerName = preferName(owner)
+	if owner != nil {
+		r.OwnerLogin = owner.Login
+	}
+}
+
+func preferName(u *models.User) string {
+	if u == nil {
+		return ""
+	}
+	if u.Name != "" {
+		return u.Name
+	}
+	return u.Login
 }
 
 func authorOr(a string) string {
@@ -145,6 +175,9 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		c.AuthorID = u.ID
 		c.AuthorAvatarURL = u.AvatarURL
 		c.ActorKind = actorKindFor(r)
+		if info, ok := tokenInfoFromRequest(r); ok {
+			applyAgentIdentity(c, u, info.Label)
+		}
 	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -306,6 +339,9 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		reply.AuthorID = u.ID
 		reply.AuthorAvatarURL = u.AvatarURL
 		reply.ActorKind = actorKindFor(r)
+		if info, ok := tokenInfoFromRequest(r); ok {
+			applyAgentIdentityReply(&reply, u, info.Label)
+		}
 	}
 	c, err := a.store.AppendReply(r.Context(), id, reply)
 	if err != nil {

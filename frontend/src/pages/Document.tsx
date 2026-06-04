@@ -43,7 +43,22 @@ export default function DocumentPage() {
   const [doc, setDoc] = useState<MdDocument | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [error, setError] = useState<APIError | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveIdRaw] = useState<string | null>(null);
+  // Comments the user has explicitly viewed/activated this session — used
+  // to clear the unread filter immediately instead of waiting for the next
+  // page load (where previouslyViewedAt finally bumps).
+  const [sessionReadIds, setSessionReadIds] = useState<Set<string>>(() => new Set());
+  const setActiveId = useCallback((id: string | null) => {
+    setActiveIdRaw(id);
+    if (id) {
+      setSessionReadIds((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+    }
+  }, []);
   const [filter, setFilter] = useState<Filter>("open");
 
   const [selection, setSelection] = useState<{
@@ -309,6 +324,7 @@ export default function DocumentPage() {
   const isUnread = useCallback(
     (c: Comment) => {
       if (!doc?.previouslyViewedAt) return false;
+      if (sessionReadIds.has(c.id)) return false;
       const prev = Date.parse(doc.previouslyViewedAt);
       // Latest activity on a thread = max(comment.updatedAt, last reply).
       let latest = Date.parse(c.updatedAt);
@@ -318,7 +334,7 @@ export default function DocumentPage() {
       }
       return latest > prev;
     },
-    [doc?.previouslyViewedAt]
+    [doc?.previouslyViewedAt, sessionReadIds]
   );
 
   const visibleComments = useMemo(() => {

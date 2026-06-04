@@ -27,8 +27,11 @@ func generateToken() (plaintext, hash, prefix string) {
 }
 
 type createTokenRequest struct {
-	Label   string `json:"label"`
-	IsAgent bool   `json:"isAgent"`
+	Label string `json:"label"`
+}
+
+type updateTokenRequest struct {
+	Label *string `json:"label,omitempty"`
 }
 
 func (a *API) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +83,6 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 		Hash:      hash,
 		Prefix:    prefix,
 		Label:     label,
-		IsAgent:   req.IsAgent,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := a.store.InsertAPIToken(r.Context(), rec); err != nil {
@@ -94,6 +96,43 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 		"token":    plaintext,
 		"metadata": rec,
 	})
+}
+
+func (a *API) updateToken(w http.ResponseWriter, r *http.Request) {
+	user := a.currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	if _, hasToken := tokenInfoFromRequest(r); hasToken {
+		writeError(w, http.StatusForbidden, "tokens can only be edited from a signed-in browser session")
+		return
+	}
+	id := mux.Vars(r)["id"]
+	capBody(w, r, maxBodyAuth)
+	var req updateTokenRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Label == nil {
+		writeError(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	label := strings.TrimSpace(*req.Label)
+	if label == "" {
+		writeError(w, http.StatusBadRequest, "label cannot be empty")
+		return
+	}
+	if len(label) > 80 {
+		writeError(w, http.StatusBadRequest, "label too long")
+		return
+	}
+	if err := a.store.UpdateAPITokenLabel(r.Context(), user.ID, id, label); err != nil {
+		internalError(w, "store.update_token_label", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) revokeToken(w http.ResponseWriter, r *http.Request) {

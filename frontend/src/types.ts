@@ -130,6 +130,8 @@ export interface Reply {
   author: string;
   authorAvatarUrl?: string;
   actorKind?: "human" | "agent";
+  ownerName?: string;
+  ownerLogin?: string;
   body: string;
   bodyHtml?: string;
   createdAt: string;
@@ -140,7 +142,6 @@ export interface APIToken {
   id: string;
   prefix: string;
   label: string;
-  isAgent: boolean;
   createdAt: string;
   lastUsedAt?: string;
 }
@@ -157,6 +158,8 @@ export interface Comment {
   author: string;
   authorAvatarUrl?: string;
   actorKind?: "human" | "agent";
+  ownerName?: string;
+  ownerLogin?: string;
   body: string;
   bodyHtml?: string;
   resolved: boolean;

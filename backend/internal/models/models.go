@@ -101,7 +101,10 @@ type Notification struct {
 }
 
 // APIToken is a per-user Personal Access Token. Used to authenticate REST
-// and MCP calls from agents or scripts that can't carry the session cookie.
+// and MCP calls from agents (or scripts that can't carry the session
+// cookie). Content created via a token is always treated as agent-authored
+// — the token's Label is the agent's identity in the UI; the token owner
+// is shown on hover as the accountable human.
 //
 // We store only SHA-256(token), never the plaintext.
 type APIToken struct {
@@ -110,7 +113,6 @@ type APIToken struct {
 	Hash       string     `bson:"hash" json:"-"`
 	Prefix     string     `bson:"prefix" json:"prefix"` // first 12 chars of token (e.g. "mmk_a3f7c2…")
 	Label      string     `bson:"label" json:"label"`
-	IsAgent    bool       `bson:"is_agent" json:"isAgent"`
 	CreatedAt  time.Time  `bson:"created_at" json:"createdAt"`
 	LastUsedAt *time.Time `bson:"last_used_at,omitempty" json:"lastUsedAt,omitempty"`
 	RevokedAt  *time.Time `bson:"revoked_at,omitempty" json:"-"`
@@ -149,6 +151,11 @@ type Reply struct {
 	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
 	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
 	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
+	// OwnerName + OwnerLogin are populated only on agent-authored content.
+	// Author then holds the token label (the agent's identity); OwnerName /
+	// OwnerLogin describe the accountable human behind the token.
+	OwnerName  string `bson:"owner_name,omitempty" json:"ownerName,omitempty"`
+	OwnerLogin string `bson:"owner_login,omitempty" json:"ownerLogin,omitempty"`
 	Body            string    `bson:"body" json:"body"`
 	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"`
 	CreatedAt       time.Time `bson:"created_at" json:"createdAt"`
@@ -163,6 +170,8 @@ type Comment struct {
 	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
 	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
 	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
+	OwnerName       string    `bson:"owner_name,omitempty" json:"ownerName,omitempty"`
+	OwnerLogin      string    `bson:"owner_login,omitempty" json:"ownerLogin,omitempty"`
 	Body            string    `bson:"body" json:"body"`
 	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"` // populated only when render=html requested
 	Resolved   bool      `bson:"resolved" json:"resolved"`

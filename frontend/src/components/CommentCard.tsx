@@ -26,44 +26,73 @@ function Avatar({
   name,
   url,
   isAgent,
+  title,
 }: {
   name: string;
   url?: string;
   isAgent?: boolean;
+  title?: string;
 }) {
-  const inner = url ? (
-    <img
-      src={url}
-      alt=""
-      className="w-7 h-7 rounded-full bg-soft"
-      loading="lazy"
-    />
-  ) : (
+  // Agents get a distinct visual — a square-ish rounded badge with the
+  // accent color and a robot glyph, not a person photo. This is intentional:
+  // bots should not LOOK like humans in a thread.
+  if (isAgent) {
+    return (
+      <span
+        className="shrink-0 w-7 h-7 rounded-md bg-accent text-accent-fg flex items-center justify-center"
+        title={title ?? `${name} (agent)`}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <rect x="3" y="9" width="18" height="12" rx="3" />
+          <circle cx="9" cy="15" r="1.2" fill="currentColor" />
+          <circle cx="15" cy="15" r="1.2" fill="currentColor" />
+          <path d="M12 9V5" />
+          <circle cx="12" cy="4" r="1.2" fill="currentColor" />
+          <path d="M7 21v1M17 21v1" />
+        </svg>
+      </span>
+    );
+  }
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        className="w-7 h-7 shrink-0 rounded-full bg-soft"
+        loading="lazy"
+        title={title}
+      />
+    );
+  }
+  return (
     <span
-      className="w-7 h-7 rounded-full text-white text-xs flex items-center justify-center font-medium"
+      className="w-7 h-7 shrink-0 rounded-full text-white text-xs flex items-center justify-center font-medium"
       style={{ background: colorFor(name) }}
+      title={title}
     >
       {initials(name)}
     </span>
   );
-  if (!isAgent) {
-    return <span className="shrink-0">{inner}</span>;
-  }
-  return (
-    <span className="shrink-0 relative" title="Created by an agent">
-      {inner}
-      <span
-        className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-accent text-accent-fg flex items-center justify-center"
-        aria-hidden
-      >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="11" width="18" height="10" rx="2" />
-          <path d="M12 7v4M8 21v-3M16 21v-3M9 15h.01M15 15h.01" />
-          <path d="M12 7a2 2 0 0 0 2-2V3" />
-        </svg>
-      </span>
-    </span>
-  );
+}
+
+// agentTitle returns the tooltip shown on an agent comment's avatar + name,
+// surfacing the accountable human behind the bot.
+function agentTitle(name: string, ownerName?: string, ownerLogin?: string): string {
+  const owner = ownerName || ownerLogin;
+  if (!owner) return `${name} (agent)`;
+  if (ownerLogin && ownerName) return `${name} — agent owned by ${ownerName} (@${ownerLogin})`;
+  if (ownerLogin) return `${name} — agent owned by @${ownerLogin}`;
+  return `${name} — agent owned by ${owner}`;
 }
 
 export default function CommentCard({
@@ -158,11 +187,28 @@ export default function CommentCard({
           name={comment.author}
           url={comment.authorAvatarUrl}
           isAgent={comment.actorKind === "agent"}
+          title={
+            comment.actorKind === "agent"
+              ? agentTitle(comment.author, comment.ownerName, comment.ownerLogin)
+              : undefined
+          }
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
-            <div className="font-medium text-sm text-ink truncate">
-              {comment.author}
+            <div
+              className="font-medium text-sm text-ink truncate flex items-center gap-1.5"
+              title={
+                comment.actorKind === "agent"
+                  ? agentTitle(comment.author, comment.ownerName, comment.ownerLogin)
+                  : undefined
+              }
+            >
+              <span className="truncate">{comment.author}</span>
+              {comment.actorKind === "agent" && (
+                <span className="text-[10px] uppercase tracking-wide bg-accent-soft text-accent rounded px-1.5 py-0.5 shrink-0">
+                  agent
+                </span>
+              )}
             </div>
             <div className="text-[11px] text-faint">
               {formatRelative(comment.createdAt)}
@@ -349,10 +395,29 @@ function ReplyRow({
         name={reply.author}
         url={reply.authorAvatarUrl}
         isAgent={reply.actorKind === "agent"}
+        title={
+          reply.actorKind === "agent"
+            ? agentTitle(reply.author, reply.ownerName, reply.ownerLogin)
+            : undefined
+        }
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between">
-          <div className="text-xs font-medium text-ink">{reply.author}</div>
+          <div
+            className="text-xs font-medium text-ink flex items-center gap-1.5"
+            title={
+              reply.actorKind === "agent"
+                ? agentTitle(reply.author, reply.ownerName, reply.ownerLogin)
+                : undefined
+            }
+          >
+            <span>{reply.author}</span>
+            {reply.actorKind === "agent" && (
+              <span className="text-[9px] uppercase tracking-wide bg-accent-soft text-accent rounded px-1 py-0.5">
+                agent
+              </span>
+            )}
+          </div>
           <div className="text-[10px] text-faint">
             {formatRelative(reply.createdAt)}
           </div>

@@ -31,7 +31,7 @@ type tokenInfoKey struct{}
 
 type tokenInfo struct {
 	TokenID string
-	IsAgent bool
+	Label   string
 }
 
 func authTokenFromHeader(r *http.Request) string {
@@ -98,8 +98,12 @@ func (a *API) userFromToken(r *http.Request, tok string) *models.User {
 	if err != nil || u == nil {
 		return nil
 	}
-	// Stash token info on the request so write handlers can mark agent.
-	*r = *r.WithContext(contextWithTokenInfo(r.Context(), tokenInfo{TokenID: rec.ID, IsAgent: rec.IsAgent}))
+	// Stash token info on the request so write handlers can mark agent
+	// and stamp the bot identity (token label) on created content.
+	*r = *r.WithContext(contextWithTokenInfo(r.Context(), tokenInfo{
+		TokenID: rec.ID,
+		Label:   rec.Label,
+	}))
 	// Touch last-used in the background; never block the request on it.
 	go a.store.TouchAPIToken(contextDetached(), rec.ID)
 	return u

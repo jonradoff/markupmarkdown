@@ -19,26 +19,26 @@ import (
 // api.API. It exists so the MCP server can stay in its own package without
 // pulling in the full handler graph.
 
-func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, bool, error) {
+func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, string, error) {
 	if !strings.HasPrefix(tok, "mmk_") || len(tok) < 32 {
-		return nil, false, nil
+		return nil, "", nil
 	}
 	rec, err := a.store.GetAPITokenByHash(ctx, HashToken(tok))
 	if err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	if rec == nil {
-		return nil, false, nil
+		return nil, "", nil
 	}
 	u, err := a.store.GetUser(ctx, rec.UserID)
 	if err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	if u == nil {
-		return nil, false, nil
+		return nil, "", nil
 	}
 	go a.store.TouchAPIToken(contextDetached(), rec.ID)
-	return u, rec.IsAgent, nil
+	return u, rec.Label, nil
 }
 
 func (a *API) DocAccess(ctx context.Context, userID, docID, accessToken string) (*models.Document, error) {
@@ -81,7 +81,9 @@ func (a *API) ListComments(ctx context.Context, docID string) ([]models.Comment,
 	return a.store.ListComments(ctx, docID)
 }
 
-func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted string, occurrence int, isAgent bool) (*models.Comment, error) {
+// CreateComment is used by the MCP path. Bearer auth implies agent, so
+// every call here stamps the bot identity from agentLabel.
+func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted string, occurrence int, agentLabel string) (*models.Comment, error) {
 	if occurrence < 1 {
 		occurrence = 1
 	}
@@ -112,21 +114,14 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 		ID:         uuid.NewString(),
 		DocumentID: docID,
 		Anchor:     models.Anchor{Start: start, End: end, Exact: quoted},
-		Author:     preferName(u),
 		AuthorID:   userID,
 		Body:       strings.TrimSpace(body),
 		Replies:    []models.Reply{},
+		ActorKind:  models.ActorAgent,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if u != nil {
-		c.AuthorAvatarURL = u.AvatarURL
-	}
-	if isAgent {
-		c.ActorKind = models.ActorAgent
-	} else {
-		c.ActorKind = models.ActorHuman
-	}
+	applyAgentIdentity(c, u, agentLabel)
 	if err := a.store.InsertComment(ctx, c); err != nil {
 		return nil, err
 	}
@@ -137,7 +132,7 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 	return c, nil
 }
 
-func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body string, isAgent bool) (*models.Comment, error) {
+func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, agentLabel string) (*models.Comment, error) {
 	parent, err := a.store.GetComment(ctx, commentID)
 	if err != nil || parent == nil {
 		return nil, errors.New("comment not found")
@@ -150,20 +145,13 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body string
 	now := time.Now().UTC()
 	reply := models.Reply{
 		ID:        uuid.NewString(),
-		Author:    preferName(u),
 		AuthorID:  userID,
 		Body:      strings.TrimSpace(body),
+		ActorKind: models.ActorAgent,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if u != nil {
-		reply.AuthorAvatarURL = u.AvatarURL
-	}
-	if isAgent {
-		reply.ActorKind = models.ActorAgent
-	} else {
-		reply.ActorKind = models.ActorHuman
-	}
+	applyAgentIdentityReply(&reply, u, agentLabel)
 	c, err := a.store.AppendReply(ctx, commentID, reply)
 	if err != nil {
 		return nil, err
