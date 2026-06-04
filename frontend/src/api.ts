@@ -135,12 +135,17 @@ export const api = {
   previewRevisionStream: async (
     documentId: string,
     onDelta: (text: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    commentIds?: string[]
   ): Promise<RevisionPreview> => {
     const res = await fetch(`/api/documents/${documentId}/revise`, {
       method: "POST",
       credentials: "include",
-      headers: { Accept: "text/event-stream" },
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ commentIds: commentIds ?? [] }),
       signal,
     });
     if (!res.ok || !res.body) {

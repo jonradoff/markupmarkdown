@@ -122,6 +122,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if u := a.currentUser(r); u != nil {
 		c.AuthorID = u.ID
+		c.AuthorAvatarURL = u.AvatarURL
 	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -273,6 +274,7 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 	}
 	if u := a.currentUser(r); u != nil {
 		reply.AuthorID = u.ID
+		reply.AuthorAvatarURL = u.AvatarURL
 	}
 	c, err := a.store.AppendReply(r.Context(), id, reply)
 	if err != nil {

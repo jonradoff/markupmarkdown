@@ -20,7 +20,17 @@ interface Props {
   requireIdentity: (next: () => void) => void;
 }
 
-function Avatar({ name }: { name: string }) {
+function Avatar({ name, url }: { name: string; url?: string }) {
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        className="w-7 h-7 shrink-0 rounded-full bg-soft"
+        loading="lazy"
+      />
+    );
+  }
   return (
     <span
       className="w-7 h-7 shrink-0 rounded-full text-white text-xs flex items-center justify-center font-medium"
@@ -119,7 +129,7 @@ export default function CommentCard({
 
       {/* Author row */}
       <div className="flex items-start gap-2 mb-2">
-        <Avatar name={comment.author} />
+        <Avatar name={comment.author} url={comment.authorAvatarUrl} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
             <div className="font-medium text-sm text-ink truncate">
@@ -307,7 +317,7 @@ function ReplyRow({
 
   return (
     <div className="flex items-start gap-2">
-      <Avatar name={reply.author} />
+      <Avatar name={reply.author} url={reply.authorAvatarUrl} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between">
           <div className="text-xs font-medium text-ink">{reply.author}</div>

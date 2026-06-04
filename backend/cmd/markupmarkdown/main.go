@@ -80,7 +80,11 @@ func main() {
 	// In prod, serve the built frontend from the same origin (catch-all).
 	if cfg.Frontend.StaticDir != "" {
 		log.Printf("Serving frontend from %s", cfg.Frontend.StaticDir)
-		r.PathPrefix("/").Handler(api.SPAHandler{StaticDir: cfg.Frontend.StaticDir})
+		r.PathPrefix("/").Handler(api.SPAHandler{
+			StaticDir: cfg.Frontend.StaticDir,
+			Store:     st,
+			SiteURL:   cfg.Frontend.URL,
+		})
 	}
 
 	corsHandler := cors.New(cors.Options{

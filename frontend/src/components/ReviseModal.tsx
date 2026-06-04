@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api, APIError } from "../api";
-import type { MdDocument, RevisionPreview } from "../types";
+import type { Comment, MdDocument, RevisionPreview } from "../types";
 import DiffView from "./DiffView";
 import ErrorBlock from "./ErrorBlock";
+import MarkdownRender from "./MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
 
 interface Props {
   doc: MdDocument;
-  resolvedCount: number;
+  resolvedComments: Comment[];
   onClose: () => void;
   onAccepted: (newDoc: MdDocument) => void;
 }
@@ -16,10 +17,17 @@ type Phase = "intro" | "generating" | "preview" | "accepting" | "error";
 
 const PRIVACY_KEY = "markupmarkdown:ai-privacy-ack";
 
-export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }: Props) {
-  const [phase, setPhase] = useState<Phase>(() =>
-    localStorage.getItem(PRIVACY_KEY) === "1" ? "generating" : "intro"
+export default function ReviseModal({
+  doc,
+  resolvedComments,
+  onClose,
+  onAccepted,
+}: Props) {
+  // Selected comment IDs (default: all resolved).
+  const [selectedIds, setSelectedIds] = useState<string[]>(() =>
+    resolvedComments.map((c) => c.id)
   );
+  const [phase, setPhase] = useState<Phase>("intro");
   const [preview, setPreview] = useState<RevisionPreview | null>(null);
   const [error, setError] = useState<APIError | null>(null);
   const [streamed, setStreamed] = useState("");
@@ -38,9 +46,6 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
       if (!cancelled) setElapsed(Math.round((Date.now() - startedAt) / 1000));
     }, 250);
 
-    // Hard abort after 5 minutes so the modal never hangs silently. Most
-    // revisions complete in 10–90s; anything past 5 min almost always means
-    // the connection died (e.g. server redeploy).
     const ctrl = new AbortController();
     const abortTimer = window.setTimeout(() => ctrl.abort(), 5 * 60 * 1000);
 
@@ -53,7 +58,8 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
             streamedRef.current += chunk;
             setStreamed(streamedRef.current);
           },
-          ctrl.signal
+          ctrl.signal,
+          selectedIds
         );
         if (cancelled) return;
         setPreview(result);
@@ -81,7 +87,7 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
       window.clearTimeout(abortTimer);
       ctrl.abort();
     };
-  }, [phase, doc.id]);
+  }, [phase, doc.id, selectedIds]);
 
   async function accept() {
     if (!preview) return;
@@ -107,9 +113,18 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
     setPhase("generating");
   }
 
+  const baseUrl = baseURLForDoc(doc.sourceUrl);
+
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={phase === "preview" || phase === "intro" || phase === "error" ? onClose : undefined} />
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={
+          phase === "preview" || phase === "intro" || phase === "error"
+            ? onClose
+            : undefined
+        }
+      />
       <div className="relative bg-card border border-rule rounded-lg shadow-xl w-full max-w-6xl my-4 flex flex-col min-h-0 overflow-hidden">
         <header className="flex items-center justify-between px-5 py-3 border-b border-rule shrink-0">
           <div>
@@ -133,8 +148,10 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
           {phase === "intro" && (
             <IntroPanel
               docTitle={doc.title}
-              resolvedCount={resolvedCount}
               isPrivate={!!doc.private}
+              resolvedComments={resolvedComments}
+              selectedIds={selectedIds}
+              setSelectedIds={setSelectedIds}
               onStart={startGeneration}
               onCancel={onClose}
             />
@@ -143,7 +160,8 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
             <StreamingPanel
               streamed={streamed}
               elapsed={elapsed}
-              resolvedCount={resolvedCount}
+              selectedCount={selectedIds.length}
+              baseUrl={baseUrl}
             />
           )}
           {phase === "accepting" && (
@@ -153,7 +171,6 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
             <PreviewPanel
               preview={preview}
               doc={doc}
-              resolvedCount={resolvedCount}
               onAccept={accept}
               onDiscard={onClose}
             />
@@ -182,30 +199,86 @@ export default function ReviseModal({ doc, resolvedCount, onClose, onAccepted }:
 
 function IntroPanel({
   docTitle,
-  resolvedCount,
   isPrivate,
+  resolvedComments,
+  selectedIds,
+  setSelectedIds,
   onStart,
   onCancel,
 }: {
   docTitle: string;
-  resolvedCount: number;
   isPrivate: boolean;
+  resolvedComments: Comment[];
+  selectedIds: string[];
+  setSelectedIds: (ids: string[]) => void;
   onStart: () => void;
   onCancel: () => void;
 }) {
+  const selectedSet = new Set(selectedIds);
+  const allSelected = selectedSet.size === resolvedComments.length;
+
+  function toggle(id: string) {
+    const next = new Set(selectedSet);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedIds([...next]);
+  }
+  function toggleAll() {
+    setSelectedIds(allSelected ? [] : resolvedComments.map((c) => c.id));
+  }
+
   return (
-    <div className="p-8 max-w-xl mx-auto">
-      <p className="text-sm text-ink mb-3">
-        Claude will read <strong>{docTitle}</strong> and the{" "}
-        <strong>
-          {resolvedCount} resolved comment{resolvedCount === 1 ? "" : "s"}
-        </strong>{" "}
-        on it, then produce a revised version that applies the agreed feedback.
-        Nothing is saved until you review the diff and click Accept.
+    <div className="p-6 max-w-2xl mx-auto w-full flex flex-col min-h-0">
+      <p className="text-sm text-ink mb-4">
+        Claude will read <strong>{docTitle}</strong> and apply the selected
+        resolved comments. Nothing is saved until you review the diff and click
+        Accept.
       </p>
+
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted">
+          Comments to apply ({selectedIds.length} of {resolvedComments.length})
+        </div>
+        <button
+          onClick={toggleAll}
+          className="text-xs text-accent hover:underline"
+        >
+          {allSelected ? "Deselect all" : "Select all"}
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-auto border border-rule rounded-lg bg-card divide-y divide-rule mb-4">
+        {resolvedComments.map((c) => {
+          const checked = selectedSet.has(c.id);
+          return (
+            <label
+              key={c.id}
+              className="flex items-start gap-3 p-3 hover:bg-soft cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggle(c.id)}
+                className="mt-1 accent-accent"
+              />
+              <div className="flex-1 min-w-0 text-sm">
+                <div className="text-xs italic text-muted line-clamp-1 mb-0.5">
+                  “{c.anchor.exact}”
+                </div>
+                <div className="text-ink line-clamp-2">{c.body}</div>
+                <div className="text-[11px] text-faint mt-0.5">
+                  by {c.author}
+                  {c.replies.length > 0 ? ` · ${c.replies.length} replies` : ""}
+                </div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+
       <div className="bg-soft border border-rule rounded p-3 text-xs text-muted mb-4">
         <strong className="text-ink">Heads up:</strong> the document content
-        and resolved comments will be sent to Anthropic via your own API key.
+        and selected comments will be sent to Anthropic via your own API key.
         {isPrivate && (
           <>
             {" "}This document is marked <strong>private</strong>; only sources
@@ -213,7 +286,8 @@ function IntroPanel({
           </>
         )}
       </div>
-      <div className="flex justify-end gap-2">
+
+      <div className="flex justify-end gap-2 shrink-0">
         <button
           onClick={onCancel}
           className="text-sm px-3 py-2 text-muted hover:text-ink"
@@ -222,14 +296,12 @@ function IntroPanel({
         </button>
         <button
           onClick={onStart}
-          className="text-sm px-4 py-2 rounded bg-accent text-accent-fg font-medium hover:opacity-90"
+          disabled={selectedIds.length === 0}
+          className="text-sm px-4 py-2 rounded bg-accent text-accent-fg font-medium hover:opacity-90 disabled:opacity-50"
         >
           Revise with AI
         </button>
       </div>
-      <p className="text-[10px] text-faint mt-3 text-center">
-        We won't ask this again on this device.
-      </p>
     </div>
   );
 }
@@ -246,21 +318,32 @@ function CenteredSpinner({ hint }: { hint: string }) {
 function StreamingPanel({
   streamed,
   elapsed,
-  resolvedCount,
+  selectedCount,
+  baseUrl,
 }: {
   streamed: string;
   elapsed: number;
-  resolvedCount: number;
+  selectedCount: number;
+  baseUrl?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  // Auto-scroll to the bottom as new content arrives.
+  // Auto-scroll the rendered output as new content arrives. Skip if the
+  // user has scrolled up — don't fight them.
+  const stickToBottom = useRef(true);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    if (!stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
   }, [streamed]);
 
-  // Rough chars→tokens (Claude averages ~4 chars/token for English markdown).
+  function onScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stickToBottom.current = atBottom;
+  }
+
   const approxTokens = Math.round(streamed.length / 4);
 
   return (
@@ -269,7 +352,7 @@ function StreamingPanel({
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full border-2 border-rule border-t-accent animate-spin" />
           {streamed.length === 0
-            ? `Reading the document and ${resolvedCount} resolved comment${resolvedCount === 1 ? "" : "s"}…`
+            ? `Reading the document and ${selectedCount} resolved comment${selectedCount === 1 ? "" : "s"}…`
             : "Claude Opus 4.7 is writing the revision…"}
         </div>
         <div className="tabular-nums">
@@ -278,15 +361,21 @@ function StreamingPanel({
       </div>
       <div
         ref={ref}
-        className="flex-1 min-h-0 overflow-auto font-mono text-[12px] leading-[1.55] p-5 whitespace-pre-wrap break-words text-ink"
+        onScroll={onScroll}
+        className="flex-1 min-h-0 overflow-auto p-6"
       >
-        {streamed || (
-          <div className="text-muted not-italic">
+        {streamed.length === 0 ? (
+          <div className="text-muted text-sm text-center py-10">
             Waiting for the first token from Claude…
           </div>
-        )}
-        {streamed && (
-          <span className="inline-block w-2 h-4 bg-accent animate-pulse ml-0.5 align-text-bottom" />
+        ) : (
+          <div className="max-w-3xl mx-auto relative">
+            <MarkdownRender content={streamed} baseUrl={baseUrl} />
+            <span
+              aria-hidden
+              className="inline-block w-1.5 h-4 bg-accent align-text-bottom ml-0.5 animate-pulse"
+            />
+          </div>
         )}
       </div>
     </div>
@@ -296,30 +385,30 @@ function StreamingPanel({
 function PreviewPanel({
   preview,
   doc,
-  resolvedCount,
   onAccept,
   onDiscard,
 }: {
   preview: RevisionPreview;
   doc: MdDocument;
-  resolvedCount: number;
   onAccept: () => void;
   onDiscard: () => void;
 }) {
   const cost = preview.costEstimateUsd;
   const costStr =
     cost < 0.005 ? "<$0.01" : `≈ $${cost.toFixed(cost < 1 ? 3 : 2)}`;
+  const applied = preview.appliedCommentIds.length;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <div className="px-5 py-2 border-b border-rule bg-soft text-xs text-muted flex items-center justify-between shrink-0">
         <div>
-          Applied <strong className="text-ink">{resolvedCount}</strong> resolved
-          comment{resolvedCount === 1 ? "" : "s"} with{" "}
+          Applied <strong className="text-ink">{applied}</strong> resolved
+          comment{applied === 1 ? "" : "s"} with{" "}
           <strong className="text-ink">{preview.model}</strong>
         </div>
         <div className="tabular-nums">
-          {preview.tokensIn.toLocaleString()} in · {preview.tokensOut.toLocaleString()} out · {costStr}
+          {preview.tokensIn.toLocaleString()} in ·{" "}
+          {preview.tokensOut.toLocaleString()} out · {costStr}
         </div>
       </div>
 

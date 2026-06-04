@@ -20,6 +20,7 @@ import { useAuth } from "../auth";
 import SignInModal from "../components/SignInModal";
 import APIKeyModal from "../components/APIKeyModal";
 import ReviseModal from "../components/ReviseModal";
+import ShareModal from "../components/ShareModal";
 import { useDialog } from "../components/Dialogs";
 import { formatRelative } from "../utils/format";
 import { downloadAsMarkdown } from "../utils/download";
@@ -35,6 +36,7 @@ export default function DocumentPage() {
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [showAPIKey, setShowAPIKey] = useState(false);
   const [showRevise, setShowRevise] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   const [reviseSignInExplain, setReviseSignInExplain] = useState(false);
 
   const [doc, setDoc] = useState<MdDocument | null>(null);
@@ -52,6 +54,16 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Keep the browser tab title in sync with the doc. Reset on unmount.
+  useEffect(() => {
+    if (!doc) return;
+    const prev = document.title;
+    document.title = `${doc.title} · markupmarkdown`;
+    return () => {
+      document.title = prev;
+    };
+  }, [doc]);
 
   // Load doc + comments. If the doc is private and the user can't access it,
   // surface the structured error (sign-in or "no access") and render nothing.
@@ -467,6 +479,19 @@ export default function DocumentPage() {
                 Revise with AI
               </button>
               <button
+                onClick={() => setShowShare(true)}
+                className="text-muted hover:text-ink"
+                title="Share this document"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="18" cy="5" r="3" />
+                  <circle cx="6" cy="12" r="3" />
+                  <circle cx="18" cy="19" r="3" />
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                  <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                </svg>
+              </button>
+              <button
                 onClick={handleDownload}
                 className="text-muted hover:text-ink"
                 title="Download as .md"
@@ -696,13 +721,17 @@ export default function DocumentPage() {
       {showRevise && (
         <ReviseModal
           doc={doc}
-          resolvedCount={resolvedCount}
+          resolvedComments={comments.filter((c) => c.resolved)}
           onClose={() => setShowRevise(false)}
           onAccepted={(newDoc) => {
             setShowRevise(false);
             navigate(`/d/${newDoc.id}`);
           }}
         />
+      )}
+
+      {showShare && (
+        <ShareModal doc={doc} onClose={() => setShowShare(false)} />
       )}
 
       {/* Hidden refresh hook for explicit reloads (not strictly needed but useful) */}

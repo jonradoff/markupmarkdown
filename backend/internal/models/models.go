@@ -88,21 +88,23 @@ type Anchor struct {
 }
 
 type Reply struct {
-	ID        string    `bson:"id" json:"id"`
-	Author    string    `bson:"author" json:"author"`
-	AuthorID  string    `bson:"author_id,omitempty" json:"-"`
-	Body      string    `bson:"body" json:"body"`
-	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
-	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
+	ID              string    `bson:"id" json:"id"`
+	Author          string    `bson:"author" json:"author"`
+	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
+	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
+	Body            string    `bson:"body" json:"body"`
+	CreatedAt       time.Time `bson:"created_at" json:"createdAt"`
+	UpdatedAt       time.Time `bson:"updated_at" json:"updatedAt"`
 }
 
 type Comment struct {
-	ID         string    `bson:"_id" json:"id"`
-	DocumentID string    `bson:"document_id" json:"documentId"`
-	Anchor     Anchor    `bson:"anchor" json:"anchor"`
-	Author     string    `bson:"author" json:"author"`
-	AuthorID   string    `bson:"author_id,omitempty" json:"-"`
-	Body       string    `bson:"body" json:"body"`
+	ID              string `bson:"_id" json:"id"`
+	DocumentID      string `bson:"document_id" json:"documentId"`
+	Anchor          Anchor `bson:"anchor" json:"anchor"`
+	Author          string `bson:"author" json:"author"`
+	AuthorID        string `bson:"author_id,omitempty" json:"-"`
+	AuthorAvatarURL string `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
+	Body            string `bson:"body" json:"body"`
 	Resolved   bool      `bson:"resolved" json:"resolved"`
 	ResolvedBy string    `bson:"resolved_by,omitempty" json:"resolvedBy,omitempty"`
 	ResolvedAt *time.Time `bson:"resolved_at,omitempty" json:"resolvedAt,omitempty"`

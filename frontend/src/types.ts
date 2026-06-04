@@ -96,6 +96,7 @@ export interface AuthConfig {
 export interface Reply {
   id: string;
   author: string;
+  authorAvatarUrl?: string;
   body: string;
   createdAt: string;
   updatedAt: string;
@@ -106,6 +107,7 @@ export interface Comment {
   documentId: string;
   anchor: Anchor;
   author: string;
+  authorAvatarUrl?: string;
   body: string;
   resolved: boolean;
   resolvedBy?: string;

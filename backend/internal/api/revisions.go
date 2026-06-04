@@ -26,6 +26,12 @@ type previewRevisionResponse struct {
 	Identical         bool     `json:"identical"`
 }
 
+type previewRevisionRequest struct {
+	// CommentIDs, when non-empty, restricts the revision to just these
+	// resolved comment threads. Empty/missing means "apply all resolved".
+	CommentIDs []string `json:"commentIds,omitempty"`
+}
+
 // previewRevision runs Claude over the doc + resolved comments and returns the
 // proposed revision WITHOUT persisting it. The frontend shows a diff preview;
 // `acceptRevision` is what actually creates the new doc.
@@ -99,18 +105,36 @@ func (a *API) previewRevision(w http.ResponseWriter, r *http.Request) {
 	// Pull comments. Need at least one resolved thread to do anything useful.
 	allComments, err := a.store.ListComments(r.Context(), docID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		internalError(w, "store.list_comments", err)
 		return
 	}
+
+	// Optional client filter: revise only the supplied subset.
+	var req previewRevisionRequest
+	_ = readJSON(r, &req) // empty body is fine
+	selected := map[string]bool{}
+	for _, id := range req.CommentIDs {
+		selected[id] = true
+	}
+	filterByIDs := len(selected) > 0
+
 	var resolved []models.Comment
 	for _, c := range allComments {
-		if c.Resolved {
-			resolved = append(resolved, c)
+		if !c.Resolved {
+			continue
 		}
+		if filterByIDs && !selected[c.ID] {
+			continue
+		}
+		resolved = append(resolved, c)
 	}
 	if len(resolved) == 0 {
+		message := "Resolve at least one comment before revising. AI revision only applies threads you've marked done."
+		if filterByIDs {
+			message = "None of the selected comments are resolved threads to apply."
+		}
 		writeJSON(w, http.StatusBadRequest, fetchErrorResponse{
-			Error: "Resolve at least one comment before revising. AI revision only applies threads you've marked done.",
+			Error: message,
 			Kind:  "no_resolved_comments",
 		})
 		return
