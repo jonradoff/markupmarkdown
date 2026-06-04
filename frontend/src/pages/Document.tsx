@@ -18,6 +18,8 @@ import CommentCard from "../components/CommentCard";
 import DocumentToolbar from "../components/DocumentToolbar";
 import { FilterButton, Count } from "../components/CommentFilterButtons";
 import CommentStepNav from "../components/CommentStepNav";
+import SourceDriftBanner from "../components/SourceDriftBanner";
+import OrphanCommentCard from "../components/OrphanCommentCard";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
 import SignInModal from "../components/SignInModal";
@@ -70,6 +72,17 @@ export default function DocumentPage() {
     popY: number;
   } | null>(null);
   const [composer, setComposer] = useState<{ anchor: AnchorSpec; y: number } | null>(null);
+  // Re-anchor mode: when the user clicks "Re-anchor to new text" on an
+  // orphan card, we enter selection-capture mode. The next text
+  // selection inside the content area + click on the popover commits
+  // the new anchor against this comment instead of opening a new
+  // comment composer.
+  const [reanchorTarget, setReanchorTarget] = useState<Comment | null>(null);
+  // True when a doc-level comment composer is open at the top of the
+  // sidebar. Doc-level comments have an empty anchor (no inline
+  // highlight) and are listed in their own section.
+  const [docLevelOpen, setDocLevelOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -183,6 +196,11 @@ export default function DocumentPage() {
     if (!el || !doc) return;
     const ranges = comments
       .filter((c) => {
+        // Orphan and doc-level comments don't render inline highlights —
+        // they live in their own sections (below the doc and at the top
+        // of the sidebar, respectively).
+        if (c.orphan) return false;
+        if (!c.anchor.exact) return false;
         switch (filter) {
           case "all": return true;
           case "resolved": return c.resolved;
@@ -373,6 +391,17 @@ export default function DocumentPage() {
       withCredentials: true,
     });
     const onUpdate = () => scheduleRefresh();
+    // doc-updated fires when the source-drift check flips state or
+    // after a sync. Re-fetch the doc itself so the banner appears /
+    // disappears without a page reload.
+    const onDocUpdate = async () => {
+      try {
+        const d = await api.getDocument(id);
+        setDoc(d);
+      } catch {
+        // SSE will retry; the next pageview also re-fetches.
+      }
+    };
     const onOpen = () => {
       // Fires on initial connect AND on auto-reconnect after a drop.
       // Refetching here recovers any broadcasts we missed during the gap.
@@ -380,10 +409,12 @@ export default function DocumentPage() {
     };
     const onHello = () => scheduleRefresh(); // belt-and-suspenders
     es.addEventListener("comments-updated", onUpdate);
+    es.addEventListener("doc-updated", onDocUpdate);
     es.addEventListener("hello", onHello);
     es.onopen = onOpen;
     return () => {
       es.removeEventListener("comments-updated", onUpdate);
+      es.removeEventListener("doc-updated", onDocUpdate);
       es.removeEventListener("hello", onHello);
       es.close();
       if (refreshTimerRef.current != null) {
@@ -455,9 +486,103 @@ export default function DocumentPage() {
     }
   }
 
+  // Pull the latest source from GitHub, re-anchor comments where the
+  // quote still appears, and surface the rest as orphans. Lives behind
+  // the SourceDriftBanner; SSE will broadcast doc-updated + comments-
+  // updated so any open viewer sees the result without a page reload.
+  async function handleSync() {
+    if (!doc || syncing) return;
+    setSyncing(true);
+    try {
+      const result = await api.syncDocumentSource(doc.id);
+      // Refetch the doc to pick up the new content + cleared drift fields.
+      const next = await api.getDocument(doc.id);
+      setDoc(next);
+      const cs = await api.listComments(doc.id);
+      applyMutation(() => cs);
+      const msg =
+        result.orphanCount > 0
+          ? `Synced — re-anchored ${result.cleanCount}, ${result.orphanCount} orphan${result.orphanCount === 1 ? "" : "s"} need manual re-anchor.`
+          : `Synced — re-anchored ${result.cleanCount} comment${result.cleanCount === 1 ? "" : "s"}.`;
+      toast.success(msg);
+    } catch (err) {
+      toastError(err, "Couldn't sync from GitHub.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  // Enter manual re-anchor mode for an orphan comment.
+  function startReanchor(c: Comment) {
+    setReanchorTarget(c);
+    setComposer(null);
+    // Scroll the main column to the top so the user can browse the doc
+    // and re-locate the right spot without obstruction.
+    const main = contentRef.current?.parentElement?.parentElement;
+    main?.scrollTo?.({ top: 0, behavior: "smooth" });
+    toast.info("Select the new text to re-anchor this comment to.");
+  }
+
+  function cancelReanchor() {
+    setReanchorTarget(null);
+  }
+
+  async function commitReanchor(anchor: AnchorSpec) {
+    if (!reanchorTarget) return;
+    try {
+      const updated = await api.patchCommentAnchor(reanchorTarget.id, {
+        start: anchor.start,
+        end: anchor.end,
+        exact: anchor.exact,
+      });
+      applyMutation((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setReanchorTarget(null);
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+      setActiveId(updated.id);
+      toast.success("Re-anchored.");
+    } catch (err) {
+      toastError(err, "Couldn't re-anchor that comment.");
+    }
+  }
+
+  async function makeDocLevel(c: Comment) {
+    try {
+      const updated = await api.patchCommentAnchor(c.id, { docLevel: true });
+      applyMutation((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+    } catch (err) {
+      toastError(err, "Couldn't convert to a document-level comment.");
+    }
+  }
+
+  async function submitDocLevelComment(body: string) {
+    if (!id) return;
+    const author = user?.name || user?.login || getAuthor() || "Anonymous";
+    try {
+      const c = await api.createComment(id, {
+        anchor: { start: 0, end: 0, exact: "" },
+        body,
+        author,
+      });
+      setDocLevelOpen(false);
+      applyMutation((prev) => [...prev, c]);
+      markSessionRead(c.id);
+    } catch (err) {
+      toastError(err, "Couldn't post that comment.");
+      throw err;
+    }
+  }
+
   function openComposerForSelection() {
     if (!selection) return;
     const sel = selection;
+    // When re-anchor mode is active, the selection becomes the new
+    // anchor for the orphan comment instead of opening a fresh
+    // composer.
+    if (reanchorTarget) {
+      commitReanchor(sel.anchor);
+      return;
+    }
     withIdentity(() => {
       // Translate the popover's window-space Y into sidebar-local
       // coordinates so the composer card lands beside the highlighted
@@ -571,8 +696,28 @@ export default function DocumentPage() {
     [doc?.previouslyViewedAt, sessionReadIds]
   );
 
+  // Partition comments by kind: inline (anchored to a highlight), doc-level
+  // (Anchor.exact empty), and orphan (sync couldn't relocate the quote).
+  // Each lives in its own section of the UI; only inline drive the
+  // anchored sidebar layout.
+  const inlineComments = useMemo(
+    () =>
+      comments.filter(
+        (c) => !c.orphan && c.anchor.exact && c.anchor.exact.length > 0
+      ),
+    [comments]
+  );
+  const docLevelComments = useMemo(
+    () => comments.filter((c) => !c.orphan && !c.anchor.exact),
+    [comments]
+  );
+  const orphanComments = useMemo(
+    () => comments.filter((c) => c.orphan),
+    [comments]
+  );
+
   const visibleComments = useMemo(() => {
-    return comments
+    return inlineComments
       .filter((c) => {
         switch (filter) {
           case "all": return true;
@@ -582,11 +727,14 @@ export default function DocumentPage() {
         }
       })
       .sort((a, b) => a.anchor.start - b.anchor.start);
-  }, [comments, filter, isUnread]);
+  }, [inlineComments, filter, isUnread]);
 
   const openCount = comments.filter((c) => !c.resolved).length;
-  const resolvedCount = comments.length - openCount;
+  const resolvedCount = comments.filter((c) => c.resolved).length;
   const unreadCount = comments.filter(isUnread).length;
+  const driftPresent = Boolean(
+    doc?.sourceLatestSha && doc.sourceLatestSha !== doc?.sourceSha
+  );
 
   async function handleReviseClick() {
     if (!user) {
@@ -763,12 +911,79 @@ export default function DocumentPage() {
             onDelete={deleteDoc}
           />
 
+          {driftPresent && doc.sourceUrl && (
+            <SourceDriftBanner
+              githubURL={doc.sourceUrl}
+              driftedAt={doc.sourceDriftedAt}
+              canSync={!!user}
+              onSync={handleSync}
+            />
+          )}
+
+          {reanchorTarget && (
+            <div className="mb-4 rounded-lg border-2 border-accent bg-accent-soft p-3 flex items-start gap-3">
+              <div className="flex-1 text-sm">
+                <div className="font-medium">
+                  Re-anchoring: “{reanchorTarget.originalExact || reanchorTarget.anchor.exact}”
+                </div>
+                <div className="text-muted mt-0.5">
+                  Select the new text in the doc, then click <em>Re-anchor here</em>{" "}
+                  in the popover. The comment will move to point at the new selection.
+                </div>
+              </div>
+              <button
+                onClick={cancelReanchor}
+                className="text-xs px-2 py-1 rounded border border-rule hover:bg-soft"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
           {/* Rendered markdown */}
           <MarkdownRender
             ref={contentRef}
             content={doc.content}
             baseUrl={baseURLForDoc(doc.sourceUrl)}
           />
+
+          {orphanComments.length > 0 && (
+            <div className="mt-10 pt-6 border-t border-rule">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted mb-3">
+                Comments without anchors{" "}
+                <span className="ml-1 inline-flex items-center justify-center min-w-[1.5em] px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-900 text-[10px] font-bold">
+                  {orphanComments.length}
+                </span>
+              </h2>
+              <p className="text-xs text-muted mb-4">
+                These comments referred to text that no longer appears in the document.
+                Re-anchor them to new text or pin as document-level comments.
+              </p>
+              <div className="space-y-3">
+                {orphanComments.map((c) => (
+                  <OrphanCommentCard
+                    key={c.id}
+                    comment={c}
+                    me={me}
+                    onStartReanchor={() => startReanchor(c)}
+                    onMakeDocLevel={() => makeDocLevel(c)}
+                    onResolve={() =>
+                      new Promise<void>((resolve) =>
+                        withIdentity(() => handleResolve(c).then(resolve))
+                      )
+                    }
+                    onReopen={() => handleReopen(c)}
+                    onReply={(body) => handleReply(c, body)}
+                    onEdit={(body) => handleEdit(c, body)}
+                    onDelete={() => handleDelete(c)}
+                    onEditReply={(rid, body) => handleEditReply(c, rid, body)}
+                    onDeleteReply={(rid) => handleDeleteReply(c, rid)}
+                    requireIdentity={withIdentity}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -853,6 +1068,71 @@ export default function DocumentPage() {
                 {activeIndex >= 0 ? activeIndex + 1 : "—"} of {visibleComments.length}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Doc-level comments — flow normally above the anchored
+            section. Always visible across all filters (they aren't
+            "open" or "resolved" in the inline sense). */}
+        {(docLevelComments.length > 0 || docLevelOpen) && (
+          <div className="px-3 pt-3 pb-2 border-b border-rule">
+            <div className="flex items-center justify-between mb-2 text-xs text-muted">
+              <span className="font-medium uppercase tracking-wide">
+                Document-level
+              </span>
+              {!docLevelOpen && (
+                <button
+                  onClick={() => withIdentity(() => setDocLevelOpen(true))}
+                  className="text-accent hover:underline"
+                >
+                  + Add
+                </button>
+              )}
+            </div>
+            {docLevelOpen && (
+              <div className="mb-3">
+                <NewCommentComposer
+                  documentId={doc.id}
+                  quotedText=""
+                  onSubmit={submitDocLevelComment}
+                  onCancel={() => setDocLevelOpen(false)}
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              {docLevelComments.map((c) => (
+                <CommentCard
+                  key={c.id}
+                  comment={c}
+                  active={activeId === c.id}
+                  me={me}
+                  requireIdentity={withIdentity}
+                  onActivate={() => setActiveId(c.id)}
+                  onResolve={() =>
+                    new Promise<void>((resolve) =>
+                      withIdentity(() => handleResolve(c).then(resolve))
+                    )
+                  }
+                  onReopen={() => handleReopen(c)}
+                  onReply={(body) => handleReply(c, body)}
+                  onEdit={(body) => handleEdit(c, body)}
+                  onDelete={() => handleDelete(c)}
+                  onEditReply={(rid, body) => handleEditReply(c, rid, body)}
+                  onDeleteReply={(rid) => handleDeleteReply(c, rid)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {docLevelComments.length === 0 && !docLevelOpen && (
+          <div className="px-3 pt-2 pb-1 border-b border-rule text-right">
+            <button
+              onClick={() => withIdentity(() => setDocLevelOpen(true))}
+              className="text-[11px] text-muted hover:text-accent"
+            >
+              + Doc-level comment
+            </button>
           </div>
         )}
 
@@ -959,12 +1239,15 @@ export default function DocumentPage() {
         )}
       </aside>
 
-      {/* Floating selection popover */}
+      {/* Floating selection popover. In re-anchor mode, the action
+          relabels to "Re-anchor here" and commits to the orphan
+          comment instead of opening a new composer. */}
       {selection && !composer && (
         <SelectionPopover
           x={selection.popX}
           y={selection.popY}
           onComment={openComposerForSelection}
+          reanchorMode={!!reanchorTarget}
         />
       )}
 

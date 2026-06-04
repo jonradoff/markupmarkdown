@@ -10,8 +10,10 @@ import type {
   MdDocument,
   MentionCandidate,
   NotificationListResponse,
+  PatchAnchorRequest,
   RevisionPreview,
   SelfDocRedirect,
+  SyncSourceResponse,
   TokenEvent,
   TokenScope,
   TrashItem,
@@ -91,6 +93,10 @@ export const api = {
     }),
   deleteDocument: (id: string) =>
     req<void>(`/api/documents/${id}`, { method: "DELETE" }),
+  /** Pulls the latest source from GitHub, re-anchors comments where
+   * possible, and flips the rest to orphan. */
+  syncDocumentSource: (id: string) =>
+    req<SyncSourceResponse>(`/api/documents/${id}/sync`, { method: "POST" }),
 
   listTrash: () => req<TrashItem[]>("/api/me/trash"),
   restoreDocument: (id: string) =>
@@ -129,6 +135,13 @@ export const api = {
     }),
   reopenComment: (id: string) =>
     req<Comment>(`/api/comments/${id}/reopen`, { method: "POST" }),
+  /** Manually re-anchor an orphan comment, or convert any comment to a
+   * doc-level pin via {docLevel: true}. */
+  patchCommentAnchor: (id: string, payload: PatchAnchorRequest) =>
+    req<Comment>(`/api/comments/${id}/anchor`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
 
   createReply: (commentId: string, body: string, author: string) =>
     req<Comment>(`/api/comments/${commentId}/replies`, {

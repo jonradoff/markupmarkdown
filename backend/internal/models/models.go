@@ -42,6 +42,18 @@ type Document struct {
 	GitHubRef   string `bson:"github_ref,omitempty" json:"githubRef,omitempty"`
 	GitHubPath  string `bson:"github_path,omitempty" json:"githubPath,omitempty"`
 
+	// SourceSHA is the GitHub blob SHA of the source file at ingest time.
+	// When non-empty and a fresh check returns a different SHA, the doc has
+	// drifted from upstream — we surface a banner and offer "Open latest"
+	// which creates a new revision with re-anchored comments.
+	SourceSHA       string     `bson:"source_sha,omitempty" json:"sourceSha,omitempty"`
+	SourceCheckedAt *time.Time `bson:"source_checked_at,omitempty" json:"sourceCheckedAt,omitempty"`
+	// SourceLatestSHA + SourceDriftedAt are populated when the cached check
+	// detects upstream drift. Cleared once the user opens a revision built
+	// from the latest content (or dismisses the banner).
+	SourceLatestSHA string     `bson:"source_latest_sha,omitempty" json:"sourceLatestSha,omitempty"`
+	SourceDriftedAt *time.Time `bson:"source_drifted_at,omitempty" json:"sourceDriftedAt,omitempty"`
+
 	// Revision chain. A non-empty ParentID means this doc was created by
 	// applying resolved comments from the parent via the AI revision feature.
 	ParentID     string        `bson:"parent_id,omitempty" json:"parentId,omitempty"`
@@ -223,6 +235,20 @@ type Comment struct {
 	ResolvedBy string    `bson:"resolved_by,omitempty" json:"resolvedBy,omitempty"`
 	ResolvedAt *time.Time `bson:"resolved_at,omitempty" json:"resolvedAt,omitempty"`
 	Replies    []Reply   `bson:"replies" json:"replies"`
+	// Orphan is true when the source document changed and we could not
+	// unambiguously re-anchor this comment in the new content (zero
+	// matches, multiple matches, or the user/agent created it as a
+	// doc-level comment with no text anchor). Orphan comments render in
+	// a dedicated section at the bottom of the doc and offer a manual
+	// re-anchor flow. Stored so the orphan state survives reloads even
+	// without a new SHA check.
+	Orphan        bool   `bson:"orphan,omitempty" json:"orphan,omitempty"`
+	// OriginalExact preserves the quoted text from before the re-anchor
+	// attempt failed. The current Anchor.Exact still reflects the last
+	// successful match; OriginalExact is what we render in the orphan
+	// card's "previously highlighted" blockquote so reviewers know what
+	// the comment was about.
+	OriginalExact string `bson:"original_exact,omitempty" json:"originalExact,omitempty"`
 	// Mine is computed at read time. See Reply.Mine for semantics.
 	Mine       bool      `bson:"-" json:"mine,omitempty"`
 	CreatedAt  time.Time `bson:"created_at" json:"createdAt"`

@@ -42,6 +42,7 @@ Everything you'd expect from a Google-Docs-style review experience, in a codebas
 - **Unread filter pill** — shows you only the threads with new activity since your last visit, with a count badge.
 - **Step through comments** with `j` / `k` (or `↑` / `↓`, or the Prev/Next buttons). The position counter respects whichever filter is active.
 - **In-app notifications** — bell icon in the header, badge for unread count, dropdown with deep links into the relevant comment.
+- **GitHub source-change detection** — for docs cloned from GitHub, we track the upstream blob SHA. When the source file gets new commits, every viewer sees a "Source updated on GitHub" banner. Click *Sync from GitHub* and we pull the latest content and re-anchor your comments to the new text automatically wherever the original quote still appears. Comments whose quoted text no longer exists surface in a dedicated *Comments without anchors* section at the bottom of the doc — re-anchor them to new text manually (drag-select, click *Re-anchor here*), pin them as document-level, or just leave them. Document-level comments (no inline highlight) live in their own sidebar section and survive any source change.
 - **Soft delete with 30-day recovery** — deleted docs sit in Trash and can be restored before the daily purge sweep.
 - **Light / dark theme** that respects your system pref.
 - **Share dialog** — copies the link with an explicit note about access (private docs warn you about the GitHub-repo requirement before you send the URL).
@@ -274,13 +275,15 @@ DELETE /api/documents/:id                       soft delete
 
 GET    /api/documents/:id/comments              ?render=html to include sanitized HTML bodies
 POST   /api/documents/:id/comments              { anchor:{start,end,exact}, body, author }
-GET    /api/documents/:id/events                SSE stream — comments-updated events
+POST   /api/documents/:id/sync                  pull latest source from GitHub + auto re-anchor comments
+GET    /api/documents/:id/events                SSE stream — comments-updated + doc-updated events
 GET    /api/documents/:id/mention-candidates    people known to this doc, for @-autocomplete
 
 PATCH  /api/comments/:id                        { body }
 DELETE /api/comments/:id
 POST   /api/comments/:id/resolve                { author }
 POST   /api/comments/:id/reopen
+PATCH  /api/comments/:id/anchor                 { start, end, exact } or { docLevel:true }
 POST   /api/comments/:id/replies                { body, author }
 PATCH  /api/comments/:id/replies/:replyId       { body }
 DELETE /api/comments/:id/replies/:replyId
@@ -318,6 +321,7 @@ GET    /SKILL.md                                canonical SKILL.md (raw markdown
 ## Architecture notes
 
 - **Comment anchoring** uses character offsets into the rendered markdown's `textContent`. Cloning the source freezes the offsets so they stay valid forever. Agent comments anchor by text-substring; the frontend resolves them to offsets at render time. See [frontend/src/utils/anchor.ts](frontend/src/utils/anchor.ts).
+- **Source-change detection** stamps the GitHub blob SHA on each doc at ingest. Every doc-open triggers an async, cached (10-min TTL) re-check against the Contents API — if the upstream SHA differs, the next view sees a *Source updated on GitHub* banner. The sync flow re-fetches the new content, then walks every comment: those whose quoted text is still present un-orphan and defer to the textContent fallback for highlight positioning; the rest flip to `orphan: true` with their original quote preserved in `originalExact`, ready for manual re-anchor. Orphan, doc-level (no inline anchor), and regular anchored comments each occupy their own UI region. See [backend/internal/api/source.go](backend/internal/api/source.go).
 - **Realtime** is a per-document in-memory hub fan-out over SSE. No external pub/sub. Disconnections auto-reconnect via the browser's EventSource.
 - **AI revision** streams Anthropic's response straight through to the browser, so you see Claude writing in real time. Backend-side timeout is 10 minutes; client-side abort is 5 minutes.
 - **API key encryption**: AES-256-GCM with a random nonce per encryption. The 32-byte master key lives only in `MARKUPMARKDOWN_ENCRYPTION_KEY` (env var / Fly secret), never in MongoDB. Encrypted blobs live in a separate `user_secrets` collection so the field can't accidentally leak via `/api/auth/me`. Hint = first 10 + last 4 characters. Key versioning supports rotation without re-encryption ceremonies.

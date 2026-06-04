@@ -57,6 +57,7 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}", a.patchDocument).Methods("PATCH")
 	r.HandleFunc("/api/documents/{id}", a.deleteDocument).Methods("DELETE")
 	r.HandleFunc("/api/documents/{id}/restore", a.restoreDocument).Methods("POST")
+	r.HandleFunc("/api/documents/{id}/sync", a.syncDocumentSource).Methods("POST")
 
 	r.HandleFunc("/api/documents/{id}/comments", a.listComments).Methods("GET")
 	r.HandleFunc("/api/documents/{id}/comments", a.createComment).Methods("POST")
@@ -64,6 +65,7 @@ func (a *API) Register(r *mux.Router) {
 
 	r.HandleFunc("/api/comments/{id}", a.patchComment).Methods("PATCH")
 	r.HandleFunc("/api/comments/{id}", a.deleteComment).Methods("DELETE")
+	r.HandleFunc("/api/comments/{id}/anchor", a.patchCommentAnchor).Methods("PATCH")
 	r.HandleFunc("/api/comments/{id}/resolve", a.resolveComment).Methods("POST")
 	r.HandleFunc("/api/comments/{id}/reopen", a.reopenComment).Methods("POST")
 	r.HandleFunc("/api/comments/{id}/replies", a.createReply).Methods("POST")

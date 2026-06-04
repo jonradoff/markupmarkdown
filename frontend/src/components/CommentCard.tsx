@@ -20,6 +20,9 @@ interface Props {
   onEditReply: (replyId: string, body: string) => Promise<void>;
   onDeleteReply: (replyId: string) => Promise<void>;
   requireIdentity: (next: () => void) => void;
+  /** When true, suppress the in-card quoted-text blockquote — used by
+   * the orphan section which renders the original quote separately. */
+  hideQuotedText?: boolean;
 }
 
 function Avatar({
@@ -108,6 +111,7 @@ export default function CommentCard({
   onEditReply,
   onDeleteReply,
   requireIdentity,
+  hideQuotedText,
 }: Props) {
   const { user } = useAuth();
   const dialog = useDialog();
@@ -186,10 +190,13 @@ export default function CommentCard({
         comment.resolved ? "opacity-70" : "",
       ].join(" ")}
     >
-      {/* Quoted text */}
-      <div className="text-xs text-muted italic mb-2 line-clamp-2 border-l-2 border-rule pl-2">
-        “{comment.anchor.exact}”
-      </div>
+      {/* Quoted text — suppressed for doc-level comments (empty anchor)
+          and when the parent renders its own quoted block (orphan card). */}
+      {!hideQuotedText && comment.anchor.exact && (
+        <div className="text-xs text-muted italic mb-2 line-clamp-2 border-l-2 border-rule pl-2">
+          “{comment.anchor.exact}”
+        </div>
+      )}
 
       {/* Author row */}
       <div className="flex items-start gap-2 mb-2">

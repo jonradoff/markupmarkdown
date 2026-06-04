@@ -35,7 +35,15 @@ func ValidateReplyBody(body string) (string, error) {
 
 // ValidateAnchor checks the offsets and exact-text length. Same rules for
 // REST (Anchor object on the wire) and MCP (anchor computed from quoted_text).
+//
+// A doc-level comment (no inline highlight) is encoded as the zero
+// anchor (Start=End=0, Exact="") and is treated as valid here. Callers
+// that need to reject doc-level pins specifically can call IsDocLevel
+// before this function.
 func ValidateAnchor(a models.Anchor) error {
+	if a.Start == 0 && a.End == 0 && strings.TrimSpace(a.Exact) == "" {
+		return nil
+	}
 	if a.End <= a.Start {
 		return errors.New("invalid anchor range")
 	}

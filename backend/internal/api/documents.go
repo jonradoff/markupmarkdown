@@ -170,6 +170,11 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 		doc.GitHubRepo = fetched.Repo
 		doc.GitHubRef = fetched.Ref
 		doc.GitHubPath = fetched.Path
+		if fetched.SHA != "" {
+			doc.SourceSHA = fetched.SHA
+			now := time.Now().UTC()
+			doc.SourceCheckedAt = &now
+		}
 		doc.Title = req.Title
 		if doc.Title == "" {
 			doc.Title = titleFromURL(req.URL)
@@ -224,6 +229,11 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := documentResponse{Document: doc}
+	// Kick off an async upstream drift check if our cached state is
+	// stale. The current request returns the state we have right now;
+	// the refresh result hits subsequent readers (and broadcasts on
+	// change so any open viewer's banner appears without a reload).
+	a.maybeRefreshSourceDrift(doc)
 	// Read prior view BEFORE bumping it, so the response reflects the
 	// state the user is about to see (unread = new since last visit).
 	if u := a.currentUser(r); u != nil {
@@ -512,6 +522,10 @@ type fetchedDoc struct {
 	Repo    string
 	Ref     string
 	Path    string
+	// SHA is the GitHub blob SHA when the source is a github.com URL. Empty
+	// for non-GitHub sources. Stored on the document so later drift checks
+	// can detect upstream changes.
+	SHA string
 }
 
 func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) (*fetchedDoc, error) {
@@ -528,10 +542,18 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 	// no access gating is needed for future readers.
 	rawContent, rawErr := a.fetchURL(ctx, normalizeGitHubURL(rawURL))
 	if rawErr == nil {
+		// Public file — capture SHA via an anonymous Contents API call so
+		// later drift checks have a baseline. We treat a failed SHA lookup
+		// as non-fatal (rate limit, transient) and proceed without it.
+		sha := ""
+		if meta, err := auth.FetchGitHubFileMeta(ctx, "", owner, repo, ref, p); err == nil {
+			sha = meta.SHA
+		}
 		return &fetchedDoc{
 			Content: rawContent,
 			Private: false,
 			Owner:   owner, Repo: repo, Ref: ref, Path: p,
+			SHA: sha,
 		}, nil
 	}
 	code := statusCodeFromFetchErr(rawErr)
@@ -544,14 +566,15 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 	// the current user has access.
 	user := a.currentUser(r)
 	if user != nil && user.AccessToken != "" {
-		c, err := auth.FetchGitHubFileContent(ctx, user.AccessToken, owner, repo, ref, p)
+		meta, err := auth.FetchGitHubFileMeta(ctx, user.AccessToken, owner, repo, ref, p)
 		if err != nil {
 			return nil, err
 		}
 		return &fetchedDoc{
-			Content: c,
+			Content: meta.Content,
 			Private: true,
 			Owner:   owner, Repo: repo, Ref: ref, Path: p,
+			SHA: meta.SHA,
 		}, nil
 	}
 

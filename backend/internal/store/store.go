@@ -868,6 +868,59 @@ func (s *Store) UpdateDocumentTitle(ctx context.Context, id, title string) error
 	return err
 }
 
+// SetDocumentSourceCheck stamps the result of a drift check. If
+// latestSHA equals the stored SourceSHA we clear the drift fields;
+// otherwise we record latestSHA + the drift timestamp so the frontend
+// can render the "source updated on GitHub" banner.
+func (s *Store) SetDocumentSourceCheck(ctx context.Context, id, latestSHA string) error {
+	now := time.Now().UTC()
+	var doc models.Document
+	if err := s.Documents().FindOne(ctx, bson.M{"_id": id}).Decode(&doc); err != nil {
+		return err
+	}
+	set := bson.M{"source_checked_at": now}
+	unset := bson.M{}
+	if doc.SourceSHA == "" || latestSHA == doc.SourceSHA {
+		// In sync (or no baseline to compare against).
+		unset["source_latest_sha"] = ""
+		unset["source_drifted_at"] = ""
+	} else {
+		set["source_latest_sha"] = latestSHA
+		if doc.SourceDriftedAt == nil {
+			set["source_drifted_at"] = now
+		}
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	_, err := s.Documents().UpdateOne(ctx, bson.M{"_id": id}, update)
+	return err
+}
+
+// ReplaceDocumentSource updates the content + SHA after a successful
+// sync (the user pulled in the latest GitHub version). Clears the
+// drift fields and bumps updated_at so the doc list re-sorts.
+func (s *Store) ReplaceDocumentSource(ctx context.Context, id, content, sha string) error {
+	now := time.Now().UTC()
+	_, err := s.Documents().UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{
+			"$set": bson.M{
+				"content":           content,
+				"source_sha":        sha,
+				"source_checked_at": now,
+				"updated_at":        now,
+			},
+			"$unset": bson.M{
+				"source_latest_sha": "",
+				"source_drifted_at": "",
+			},
+		},
+	)
+	return err
+}
+
 // Comments
 
 func (s *Store) InsertComment(ctx context.Context, c *models.Comment) error {

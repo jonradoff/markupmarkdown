@@ -73,6 +73,15 @@ export interface MdDocument {
   githubRepo?: string;
   githubRef?: string;
   githubPath?: string;
+  /** Blob SHA of the source file at last sync, if GitHub-sourced. */
+  sourceSha?: string;
+  /** When the upstream SHA was last checked. */
+  sourceCheckedAt?: string;
+  /** Set when the latest upstream SHA differs from sourceSha — the
+   * frontend renders a "source updated on GitHub" banner. */
+  sourceLatestSha?: string;
+  /** When the drift was first observed. */
+  sourceDriftedAt?: string;
   parentId?: string;
   revisionMeta?: RevisionMeta;
   parent?: ParentSummary;
@@ -191,7 +200,31 @@ export interface Comment {
   resolved: boolean;
   resolvedBy?: string;
   resolvedAt?: string;
+  /** True when the source changed and we couldn't unambiguously
+   * re-locate the original quoted text. Orphans render in a section
+   * below the doc with a manual re-anchor flow. */
+  orphan?: boolean;
+  /** The quoted text from before the source change — what the
+   * comment was originally about. Shown in the orphan card. */
+  originalExact?: string;
   replies: Reply[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SyncSourceResponse {
+  id: string;
+  sourceSha: string;
+  cleanCount: number;
+  orphanCount: number;
+}
+
+export interface PatchAnchorRequest {
+  start?: number;
+  end?: number;
+  exact?: string;
+  prefix?: string;
+  suffix?: string;
+  /** When true, convert to a document-level comment (no inline anchor). */
+  docLevel?: boolean;
 }

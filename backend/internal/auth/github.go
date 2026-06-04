@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -206,6 +207,88 @@ func parseSSOHeader(v string) string {
 		}
 	}
 	return ""
+}
+
+// FileMeta is returned by FetchGitHubFileMeta — pairs the Git blob SHA with
+// the file's decoded content, so callers can both render and later
+// drift-check against a single API call.
+type FileMeta struct {
+	SHA     string
+	Content string
+}
+
+// FetchGitHubFileMeta calls the Contents API with the JSON accept header,
+// returning both the blob SHA and decoded content. Works with an empty
+// accessToken (public repos, anonymous IP-rate-limited) or an authed token
+// (private repos). For drift-detection we care about SHA equality; the
+// content is decoded so the same call can drive a sync.
+func FetchGitHubFileMeta(ctx context.Context, accessToken, owner, repo, ref, path string) (*FileMeta, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo),
+		strings.TrimPrefix(path, "/"), url.QueryEscape(ref))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &FetchError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+			SSOURL:     parseSSOHeader(resp.Header.Get("X-GitHub-SSO")),
+		}
+	}
+	var payload struct {
+		SHA      string `json:"sha"`
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+		Type     string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Type != "" && payload.Type != "file" {
+		return nil, fmt.Errorf("github contents: not a file (type=%s)", payload.Type)
+	}
+	content := payload.Content
+	if payload.Encoding == "base64" {
+		// GitHub wraps the base64 payload with newlines every 60 chars.
+		raw := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' {
+				return -1
+			}
+			return r
+		}, payload.Content)
+		decoded, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("github contents: decode base64: %w", err)
+		}
+		content = string(decoded)
+	}
+	return &FileMeta{SHA: payload.SHA, Content: content}, nil
+}
+
+// FetchGitHubFileSHA is a cheap variant used for drift-detection — same call
+// shape as FetchGitHubFileMeta but discards the content body to keep the
+// memory + parse cost down. (We still pay the network cost; GitHub doesn't
+// expose a HEAD-equivalent on the Contents endpoint.)
+func FetchGitHubFileSHA(ctx context.Context, accessToken, owner, repo, ref, path string) (string, error) {
+	meta, err := FetchGitHubFileMeta(ctx, accessToken, owner, repo, ref, path)
+	if err != nil {
+		return "", err
+	}
+	return meta.SHA, nil
 }
 
 // FetchGitHubFileContent uses the GitHub Contents API to load a file from a
