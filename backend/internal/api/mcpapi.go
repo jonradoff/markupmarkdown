@@ -93,15 +93,26 @@ func (a *API) DocAccess(ctx context.Context, userID, docID, accessToken string) 
 	if doc == nil {
 		return nil, errors.New("document not found")
 	}
-	if !doc.Private {
+	owner, repo, ref, path, isGitHub := deriveGitHubInfo(doc)
+	// Non-github docs: always readable.
+	if !isGitHub {
 		return doc, nil
 	}
-	ok, err := repoAccessCache.check(ctx, userID, accessToken, doc.GitHubOwner, doc.GitHubRepo)
+	// For github-sourced docs the stored Private flag is just a hint;
+	// re-verify the raw URL's public reachability (cached).
+	if a.publicGitHubCheck(ctx, owner, repo, ref, path) {
+		return doc, nil
+	}
+	// Self-heal if necessary.
+	if !doc.Private || doc.GitHubOwner == "" {
+		go a.markDocPrivate(doc.ID, owner, repo, ref, path)
+	}
+	ok, err := repoAccessCache.check(ctx, userID, accessToken, owner, repo)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("no current GitHub access to %s/%s", doc.GitHubOwner, doc.GitHubRepo)
+		return nil, fmt.Errorf("no current GitHub access to %s/%s", owner, repo)
 	}
 	return doc, nil
 }
