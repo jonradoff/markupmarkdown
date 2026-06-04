@@ -387,6 +387,40 @@ func (s *Store) GetDocumentView(ctx context.Context, documentID, userID string) 
 	return &row, nil
 }
 
+// ViewersOfDocument returns the set of user IDs that have ever opened the
+// given document. Used by listMentionCandidates to scope the @-mention
+// autocomplete to people who plausibly know what doc the author is
+// talking about — not the entire user base.
+func (s *Store) ViewersOfDocument(ctx context.Context, documentID string) ([]string, error) {
+	cur, err := s.DocumentViews().Find(ctx,
+		bson.M{"document_id": documentID},
+		options.Find().SetProjection(bson.M{"user_id": 1}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		UserID string `bson:"user_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.UserID == "" {
+			continue
+		}
+		if _, ok := seen[r.UserID]; ok {
+			continue
+		}
+		seen[r.UserID] = struct{}{}
+		out = append(out, r.UserID)
+	}
+	return out, nil
+}
+
 func (s *Store) viewedDocumentIDs(ctx context.Context, userID string) ([]string, error) {
 	cur, err := s.DocumentViews().Find(ctx,
 		bson.M{"user_id": userID},

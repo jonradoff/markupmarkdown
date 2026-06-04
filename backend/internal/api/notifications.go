@@ -145,6 +145,15 @@ func (a *API) listMentionCandidates(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Include everyone who's ever opened this document — that's the
+	// natural scope for "people who could reasonably be mentioned in
+	// this thread". Deliberately NOT a global user directory; markup-
+	// markdown is per-doc collaboration, not a chat app.
+	if viewers, err := a.store.ViewersOfDocument(r.Context(), docID); err == nil {
+		for _, vid := range viewers {
+			userIDs[vid] = struct{}{}
+		}
+	}
 	// Always include the requester so they show up first in the menu.
 	if u := a.currentUser(r); u != nil {
 		userIDs[u.ID] = struct{}{}
