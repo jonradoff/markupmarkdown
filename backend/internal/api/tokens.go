@@ -132,6 +132,15 @@ func (a *API) updateToken(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "store.update_token_label", err)
 		return
 	}
+	// Broadcast a refresh on every doc this token has commented on so open
+	// viewers see the new label without reloading.
+	go func() {
+		ctx := contextDetached()
+		ids, _ := a.store.DistinctDocIDsForToken(ctx, id)
+		for _, did := range ids {
+			a.hub.Broadcast(did, "comments-updated")
+		}
+	}()
 	w.WriteHeader(http.StatusNoContent)
 }
 

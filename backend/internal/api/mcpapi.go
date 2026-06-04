@@ -19,26 +19,26 @@ import (
 // api.API. It exists so the MCP server can stay in its own package without
 // pulling in the full handler graph.
 
-func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, string, error) {
+func (a *API) UserFromBearer(ctx context.Context, tok string) (*models.User, string, string, error) {
 	if !strings.HasPrefix(tok, "mmk_") || len(tok) < 32 {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
 	rec, err := a.store.GetAPITokenByHash(ctx, HashToken(tok))
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if rec == nil {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
 	u, err := a.store.GetUser(ctx, rec.UserID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if u == nil {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
 	go a.store.TouchAPIToken(contextDetached(), rec.ID)
-	return u, rec.Label, nil
+	return u, rec.ID, rec.Label, nil
 }
 
 func (a *API) DocAccess(ctx context.Context, userID, docID, accessToken string) (*models.Document, error) {
@@ -82,8 +82,10 @@ func (a *API) ListComments(ctx context.Context, docID string) ([]models.Comment,
 }
 
 // CreateComment is used by the MCP path. Bearer auth implies agent, so
-// every call here stamps the bot identity from agentLabel.
-func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted string, occurrence int, agentLabel string) (*models.Comment, error) {
+// every call here stamps the bot identity from tokenID + agentLabel; the
+// label is recomputed at read time from the current token record so
+// renaming the token reflects everywhere.
+func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted string, occurrence int, tokenID, agentLabel string) (*models.Comment, error) {
 	if occurrence < 1 {
 		occurrence = 1
 	}
@@ -121,10 +123,11 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	applyAgentIdentity(c, u, agentLabel)
+	stampAgentWrite(c, tokenID, agentLabel)
 	if err := a.store.InsertComment(ctx, c); err != nil {
 		return nil, err
 	}
+	a.resolveAgentIdentity(ctx, c)
 	a.hub.Broadcast(docID, "comments-updated")
 	a.fanOutCommentNotifications(fanOutInput{
 		DocID: docID, DocTitle: doc.Title, Body: c.Body, Comment: c, Actor: u,
@@ -132,7 +135,7 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 	return c, nil
 }
 
-func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, agentLabel string) (*models.Comment, error) {
+func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, tokenID, agentLabel string) (*models.Comment, error) {
 	parent, err := a.store.GetComment(ctx, commentID)
 	if err != nil || parent == nil {
 		return nil, errors.New("comment not found")
@@ -151,7 +154,8 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, agent
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	applyAgentIdentityReply(&reply, u, agentLabel)
+	stampAgentWriteReply(&reply, tokenID, agentLabel)
+	_ = u
 	c, err := a.store.AppendReply(ctx, commentID, reply)
 	if err != nil {
 		return nil, err
@@ -161,6 +165,7 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, agent
 		DocID: c.DocumentID, DocTitle: doc.Title, Body: reply.Body,
 		Comment: c, ReplyOf: parent, Actor: u,
 	})
+	a.resolveAgentIdentity(ctx, c)
 	return c, nil
 }
 

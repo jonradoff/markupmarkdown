@@ -128,6 +128,60 @@ func (s *Store) ListAPITokensForUser(ctx context.Context, userID string) ([]mode
 	return out, nil
 }
 
+// GetAPITokensByIDs returns a {id → token} map for the supplied set. Used
+// by the comment-read paths to resolve agent identities at the current
+// label, so renaming a token reflects everywhere it has commented.
+func (s *Store) GetAPITokensByIDs(ctx context.Context, ids []string) (map[string]*models.APIToken, error) {
+	if len(ids) == 0 {
+		return map[string]*models.APIToken{}, nil
+	}
+	cur, err := s.APITokens().Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []models.APIToken
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]*models.APIToken, len(rows))
+	for i := range rows {
+		out[rows[i].ID] = &rows[i]
+	}
+	return out, nil
+}
+
+// DistinctDocIDsForToken returns every document where the token has authored
+// a comment or reply. Used to fan out a comments-updated event on rename.
+func (s *Store) DistinctDocIDsForToken(ctx context.Context, tokenID string) ([]string, error) {
+	cur, err := s.Comments().Find(ctx, bson.M{
+		"$or": []bson.M{
+			{"token_id": tokenID},
+			{"replies.token_id": tokenID},
+		},
+	}, options.Find().SetProjection(bson.M{"document_id": 1}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		DocumentID string `bson:"document_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if _, ok := seen[r.DocumentID]; ok {
+			continue
+		}
+		seen[r.DocumentID] = struct{}{}
+		out = append(out, r.DocumentID)
+	}
+	return out, nil
+}
+
 func (s *Store) UpdateAPITokenLabel(ctx context.Context, userID, id, label string) error {
 	_, err := s.APITokens().UpdateOne(ctx,
 		bson.M{"_id": id, "user_id": userID, "revoked_at": bson.M{"$exists": false}},

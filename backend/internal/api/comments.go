@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -43,24 +44,125 @@ func actorKindFor(r *http.Request) models.ActorKind {
 	return models.ActorHuman
 }
 
-// applyAgentIdentity rewrites c.Author / c.AuthorAvatarURL with the bot's
-// identity (token label) and stamps the accountable human as Owner. Called
-// when the create request came through an agent-flagged token.
-func applyAgentIdentity(c *models.Comment, owner *models.User, label string) {
+// stampAgentWrite records the IDs we'll need to resolve display fields at
+// read time. The Author field gets a snapshot (current token label) as a
+// fallback for old clients and for raw Mongo readers — but the canonical
+// rendering goes through resolveAgentIdentities at read time so renames
+// flow through everywhere immediately.
+func stampAgentWrite(c *models.Comment, tokenID, label string) {
+	c.TokenID = tokenID
 	c.Author = label
 	c.AuthorAvatarURL = ""
-	c.OwnerName = preferName(owner)
-	if owner != nil {
-		c.OwnerLogin = owner.Login
-	}
 }
-func applyAgentIdentityReply(r *models.Reply, owner *models.User, label string) {
+func stampAgentWriteReply(r *models.Reply, tokenID, label string) {
+	r.TokenID = tokenID
 	r.Author = label
 	r.AuthorAvatarURL = ""
-	r.OwnerName = preferName(owner)
-	if owner != nil {
-		r.OwnerLogin = owner.Login
+}
+
+// resolveAgentIdentities overlays the display fields on agent-authored
+// comments and replies from the current token + user records. Called by
+// every read path that returns comments to the client.
+func (a *API) resolveAgentIdentities(ctx context.Context, comments []models.Comment) {
+	tokenIDs := map[string]struct{}{}
+	userIDs := map[string]struct{}{}
+	collect := func(actor models.ActorKind, tid, uid string) {
+		if actor != models.ActorAgent {
+			return
+		}
+		if tid != "" {
+			tokenIDs[tid] = struct{}{}
+		}
+		if uid != "" {
+			userIDs[uid] = struct{}{}
+		}
 	}
+	for i := range comments {
+		collect(comments[i].ActorKind, comments[i].TokenID, comments[i].AuthorID)
+		for j := range comments[i].Replies {
+			collect(comments[i].Replies[j].ActorKind, comments[i].Replies[j].TokenID, comments[i].Replies[j].AuthorID)
+		}
+	}
+	tokens, _ := a.store.GetAPITokensByIDs(ctx, mapKeys(tokenIDs))
+	users := map[string]*models.User{}
+	for uid := range userIDs {
+		if u, _ := a.store.GetUser(ctx, uid); u != nil {
+			users[uid] = u
+		}
+	}
+
+	overlay := func(actor models.ActorKind, tid, uid string, author, ownerName, ownerLogin *string) {
+		if actor != models.ActorAgent {
+			return
+		}
+		if tok := tokens[tid]; tok != nil {
+			*author = tok.Label
+		}
+		if u := users[uid]; u != nil {
+			*ownerName = preferName(u)
+			*ownerLogin = u.Login
+		}
+	}
+	for i := range comments {
+		overlay(comments[i].ActorKind, comments[i].TokenID, comments[i].AuthorID,
+			&comments[i].Author, &comments[i].OwnerName, &comments[i].OwnerLogin)
+		comments[i].AuthorAvatarURL = ""
+		for j := range comments[i].Replies {
+			overlay(comments[i].Replies[j].ActorKind, comments[i].Replies[j].TokenID, comments[i].Replies[j].AuthorID,
+				&comments[i].Replies[j].Author, &comments[i].Replies[j].OwnerName, &comments[i].Replies[j].OwnerLogin)
+			comments[i].Replies[j].AuthorAvatarURL = ""
+		}
+	}
+}
+
+// resolveAgentIdentity overlays one comment in place (used by paths that
+// return a freshly created or updated single comment).
+func (a *API) resolveAgentIdentity(ctx context.Context, c *models.Comment) {
+	if c == nil {
+		return
+	}
+	a.resolveAgentIdentities(ctx, []models.Comment{*c})
+	// resolveAgentIdentities works on a copy of the slice element; redo
+	// in-place by re-fetching token + user manually for the one item.
+	if c.ActorKind == models.ActorAgent {
+		if c.TokenID != "" {
+			if tok, _ := a.store.GetAPITokensByIDs(ctx, []string{c.TokenID}); tok[c.TokenID] != nil {
+				c.Author = tok[c.TokenID].Label
+			}
+		}
+		if c.AuthorID != "" {
+			if u, _ := a.store.GetUser(ctx, c.AuthorID); u != nil {
+				c.OwnerName = preferName(u)
+				c.OwnerLogin = u.Login
+			}
+		}
+		c.AuthorAvatarURL = ""
+	}
+	for i := range c.Replies {
+		if c.Replies[i].ActorKind != models.ActorAgent {
+			continue
+		}
+		if c.Replies[i].TokenID != "" {
+			if tok, _ := a.store.GetAPITokensByIDs(ctx, []string{c.Replies[i].TokenID}); tok[c.Replies[i].TokenID] != nil {
+				c.Replies[i].Author = tok[c.Replies[i].TokenID].Label
+			}
+		}
+		if c.Replies[i].AuthorID != "" {
+			if u, _ := a.store.GetUser(ctx, c.Replies[i].AuthorID); u != nil {
+				c.Replies[i].OwnerName = preferName(u)
+				c.Replies[i].OwnerLogin = u.Login
+			}
+		}
+		c.Replies[i].AuthorAvatarURL = ""
+	}
+}
+
+func mapKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func preferName(u *models.User) string {
@@ -108,6 +210,7 @@ func (a *API) listComments(w http.ResponseWriter, r *http.Request) {
 	if comments == nil {
 		comments = []models.Comment{}
 	}
+	a.resolveAgentIdentities(r.Context(), comments)
 	// Opt-in HTML rendering of bodies for agents / integrators that want
 	// pre-rendered output. Default is markdown source (machine-readable).
 	if r.URL.Query().Get("render") == "html" {
@@ -176,7 +279,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		c.AuthorAvatarURL = u.AvatarURL
 		c.ActorKind = actorKindFor(r)
 		if info, ok := tokenInfoFromRequest(r); ok {
-			applyAgentIdentity(c, u, info.Label)
+			stampAgentWrite(c, info.TokenID, info.Label)
 		}
 	}
 	if err := a.store.InsertComment(r.Context(), c); err != nil {
@@ -191,7 +294,7 @@ func (a *API) createComment(w http.ResponseWriter, r *http.Request) {
 		Comment:  c,
 		Actor:    a.currentUser(r),
 	})
-	writeJSON(w, http.StatusCreated, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
@@ -233,7 +336,7 @@ func (a *API) patchComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) deleteComment(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +379,7 @@ func (a *API) resolveComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +402,7 @@ func (a *API) reopenComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +443,7 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		reply.AuthorAvatarURL = u.AvatarURL
 		reply.ActorKind = actorKindFor(r)
 		if info, ok := tokenInfoFromRequest(r); ok {
-			applyAgentIdentityReply(&reply, u, info.Label)
+			stampAgentWriteReply(&reply, info.TokenID, info.Label)
 		}
 	}
 	c, err := a.store.AppendReply(r.Context(), id, reply)
@@ -361,7 +464,7 @@ func (a *API) createReply(w http.ResponseWriter, r *http.Request) {
 		ReplyOf:  parentComment,
 		Actor:    a.currentUser(r),
 	})
-	writeJSON(w, http.StatusCreated, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusCreated, c)
 }
 
 func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +499,7 @@ func (a *API) updateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
@@ -416,5 +519,5 @@ func (a *API) deleteReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.hub.Broadcast(c.DocumentID, "comments-updated")
-	writeJSON(w, http.StatusOK, c)
+	a.resolveAgentIdentity(r.Context(), c); writeJSON(w, http.StatusOK, c)
 }

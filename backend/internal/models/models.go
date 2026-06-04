@@ -151,11 +151,13 @@ type Reply struct {
 	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
 	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
 	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
-	// OwnerName + OwnerLogin are populated only on agent-authored content.
-	// Author then holds the token label (the agent's identity); OwnerName /
-	// OwnerLogin describe the accountable human behind the token.
-	OwnerName  string `bson:"owner_name,omitempty" json:"ownerName,omitempty"`
-	OwnerLogin string `bson:"owner_login,omitempty" json:"ownerLogin,omitempty"`
+	// TokenID identifies the API token used to create agent content. The
+	// display fields (Author, OwnerName, OwnerLogin) are RESOLVED at read
+	// time from the current token + owner records, so renaming a token
+	// updates everywhere it has commented.
+	TokenID    string `bson:"token_id,omitempty" json:"-"`
+	OwnerName  string `bson:"-" json:"ownerName,omitempty"`
+	OwnerLogin string `bson:"-" json:"ownerLogin,omitempty"`
 	Body            string    `bson:"body" json:"body"`
 	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"`
 	CreatedAt       time.Time `bson:"created_at" json:"createdAt"`
@@ -170,8 +172,9 @@ type Comment struct {
 	AuthorID        string    `bson:"author_id,omitempty" json:"-"`
 	AuthorAvatarURL string    `bson:"author_avatar_url,omitempty" json:"authorAvatarUrl,omitempty"`
 	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
-	OwnerName       string    `bson:"owner_name,omitempty" json:"ownerName,omitempty"`
-	OwnerLogin      string    `bson:"owner_login,omitempty" json:"ownerLogin,omitempty"`
+	TokenID         string    `bson:"token_id,omitempty" json:"-"`
+	OwnerName       string    `bson:"-" json:"ownerName,omitempty"`
+	OwnerLogin      string    `bson:"-" json:"ownerLogin,omitempty"`
 	Body            string    `bson:"body" json:"body"`
 	BodyHTML        string    `bson:"-" json:"bodyHtml,omitempty"` // populated only when render=html requested
 	Resolved   bool      `bson:"resolved" json:"resolved"`
