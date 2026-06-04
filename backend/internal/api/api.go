@@ -51,9 +51,11 @@ func (a *API) Register(r *mux.Router) {
 
 	r.HandleFunc("/api/documents", a.listDocuments).Methods("GET")
 	r.HandleFunc("/api/documents", a.createDocument).Methods("POST")
+	r.HandleFunc("/api/me/trash", a.listTrash).Methods("GET")
 	r.HandleFunc("/api/documents/{id}", a.getDocument).Methods("GET")
 	r.HandleFunc("/api/documents/{id}", a.patchDocument).Methods("PATCH")
 	r.HandleFunc("/api/documents/{id}", a.deleteDocument).Methods("DELETE")
+	r.HandleFunc("/api/documents/{id}/restore", a.restoreDocument).Methods("POST")
 
 	r.HandleFunc("/api/documents/{id}/comments", a.listComments).Methods("GET")
 	r.HandleFunc("/api/documents/{id}/comments", a.createComment).Methods("POST")

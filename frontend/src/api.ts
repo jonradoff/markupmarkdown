@@ -7,6 +7,7 @@ import type {
   DocumentSummary,
   MdDocument,
   RevisionPreview,
+  TrashItem,
 } from "./types";
 
 export interface APIErrorAction {
@@ -80,6 +81,10 @@ export const api = {
     }),
   deleteDocument: (id: string) =>
     req<void>(`/api/documents/${id}`, { method: "DELETE" }),
+
+  listTrash: () => req<TrashItem[]>("/api/me/trash"),
+  restoreDocument: (id: string) =>
+    req<{ id: string }>(`/api/documents/${id}/restore`, { method: "POST" }),
 
   listComments: (documentId: string) =>
     req<Comment[]>(`/api/documents/${documentId}/comments`),

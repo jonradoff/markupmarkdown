@@ -52,6 +52,11 @@ type Document struct {
 	// ListDocumentsForUser to scope the home-page list to docs you worked on.
 	CreatedByID string `bson:"created_by_id,omitempty" json:"-"`
 
+	// DeletedAt is set when the doc enters soft-deleted state. The doc
+	// stays in MongoDB for ~30 days so the user can restore it from the
+	// Trash view; after that a background sweep will purge it.
+	DeletedAt *time.Time `bson:"deleted_at,omitempty" json:"deletedAt,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
 }

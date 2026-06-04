@@ -101,6 +101,32 @@ func (s *Store) RecordDocumentView(ctx context.Context, documentID, userID strin
 	return err
 }
 
+// DocumentView is the per-(doc, user) read marker.
+type DocumentView struct {
+	ID            string    `bson:"_id"`
+	DocumentID    string    `bson:"document_id"`
+	UserID        string    `bson:"user_id"`
+	FirstViewedAt time.Time `bson:"first_viewed_at"`
+	LastViewedAt  time.Time `bson:"last_viewed_at"`
+}
+
+// GetDocumentView returns the existing view, or nil if never opened.
+// Read this synchronously BEFORE enqueueing the bump — that way the API
+// response reflects the prior state, which is what the unread filter
+// keys off of.
+func (s *Store) GetDocumentView(ctx context.Context, documentID, userID string) (*DocumentView, error) {
+	id := documentID + ":" + userID
+	var row DocumentView
+	err := s.DocumentViews().FindOne(ctx, bson.M{"_id": id}).Decode(&row)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
 func (s *Store) viewedDocumentIDs(ctx context.Context, userID string) ([]string, error) {
 	cur, err := s.DocumentViews().Find(ctx,
 		bson.M{"user_id": userID},
@@ -319,7 +345,26 @@ func (s *Store) InsertDocument(ctx context.Context, d *models.Document) error {
 
 func (s *Store) GetDocument(ctx context.Context, id string) (*models.Document, error) {
 	var d models.Document
-	err := s.Documents().FindOne(ctx, bson.M{"_id": id}).Decode(&d)
+	err := s.Documents().FindOne(ctx, bson.M{
+		"_id":        id,
+		"deleted_at": bson.M{"$exists": false},
+	}).Decode(&d)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// GetDeletedDocument returns a soft-deleted doc by ID. Used by Restore.
+func (s *Store) GetDeletedDocument(ctx context.Context, id string) (*models.Document, error) {
+	var d models.Document
+	err := s.Documents().FindOne(ctx, bson.M{
+		"_id":        id,
+		"deleted_at": bson.M{"$exists": true},
+	}).Decode(&d)
 	if err == mongo.ErrNoDocuments {
 		return nil, nil
 	}
@@ -390,7 +435,12 @@ func (s *Store) ListDocumentsForUser(ctx context.Context, userID string) ([]mode
 	}
 
 	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}})
-	cur2, err := s.Documents().Find(ctx, bson.M{"$or": or}, opts)
+	cur2, err := s.Documents().Find(ctx, bson.M{
+		"$and": []bson.M{
+			{"$or": or},
+			{"deleted_at": bson.M{"$exists": false}},
+		},
+	}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +452,88 @@ func (s *Store) ListDocumentsForUser(ctx context.Context, userID string) ([]mode
 	return out, nil
 }
 
-func (s *Store) DeleteDocument(ctx context.Context, id string) error {
+// ListTrashForUser returns soft-deleted docs the user has touched.
+func (s *Store) ListTrashForUser(ctx context.Context, userID string) ([]models.Document, error) {
+	idSet := map[string]struct{}{}
+	cur, err := s.Comments().Find(ctx, bson.M{
+		"$or": []bson.M{
+			{"author_id": userID},
+			{"replies.author_id": userID},
+		},
+	}, options.Find().SetProjection(bson.M{"document_id": 1}))
+	if err == nil {
+		var rows []struct {
+			DocumentID string `bson:"document_id"`
+		}
+		if err := cur.All(ctx, &rows); err == nil {
+			for _, r := range rows {
+				idSet[r.DocumentID] = struct{}{}
+			}
+		}
+		_ = cur.Close(ctx)
+	}
+	if viewed, err := s.viewedDocumentIDs(ctx, userID); err == nil {
+		for _, id := range viewed {
+			idSet[id] = struct{}{}
+		}
+	}
+	or := []bson.M{
+		{"created_by_id": userID},
+		{"revision_meta.generated_by_id": userID},
+	}
+	if len(idSet) > 0 {
+		ids := make([]string, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+		or = append(or, bson.M{"_id": bson.M{"$in": ids}})
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "deleted_at", Value: -1}})
+	cur2, err := s.Documents().Find(ctx, bson.M{
+		"$and": []bson.M{
+			{"$or": or},
+			{"deleted_at": bson.M{"$exists": true}},
+		},
+	}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur2.Close(ctx)
+	var out []models.Document
+	if err := cur2.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SoftDeleteDocument marks the doc deleted_at = now. Comments and views are
+// retained so a Restore brings the doc back to the same state. A separate
+// purge sweep handles the eventual hard delete.
+func (s *Store) SoftDeleteDocument(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+	_, err := s.Documents().UpdateOne(ctx,
+		bson.M{"_id": id, "deleted_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"deleted_at": now, "updated_at": now}},
+	)
+	return err
+}
+
+// RestoreDocument clears the deleted_at marker.
+func (s *Store) RestoreDocument(ctx context.Context, id string) error {
+	_, err := s.Documents().UpdateOne(ctx,
+		bson.M{"_id": id, "deleted_at": bson.M{"$exists": true}},
+		bson.M{
+			"$unset": bson.M{"deleted_at": ""},
+			"$set":   bson.M{"updated_at": time.Now().UTC()},
+		},
+	)
+	return err
+}
+
+// PurgeDocument is the hard-delete used by the background sweep once the
+// retention window has expired.
+func (s *Store) PurgeDocument(ctx context.Context, id string) error {
 	if _, err := s.Documents().DeleteOne(ctx, bson.M{"_id": id}); err != nil {
 		return err
 	}
@@ -411,6 +542,32 @@ func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 	}
 	_, err := s.DocumentViews().DeleteMany(ctx, bson.M{"document_id": id})
 	return err
+}
+
+// PurgeExpiredDeletes hard-deletes all soft-deleted docs older than cutoff.
+// Returns the number purged.
+func (s *Store) PurgeExpiredDeletes(ctx context.Context, cutoff time.Time) (int64, error) {
+	cur, err := s.Documents().Find(ctx,
+		bson.M{"deleted_at": bson.M{"$lt": cutoff}},
+		options.Find().SetProjection(bson.M{"_id": 1}),
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return 0, err
+	}
+	var purged int64
+	for _, r := range rows {
+		if err := s.PurgeDocument(ctx, r.ID); err == nil {
+			purged++
+		}
+	}
+	return purged, nil
 }
 
 func (s *Store) UpdateDocumentTitle(ctx context.Context, id, title string) error {

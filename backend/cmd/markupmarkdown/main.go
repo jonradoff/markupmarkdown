@@ -76,6 +76,7 @@ func main() {
 		log.Fatalf("api init: %v", err)
 	}
 	a.Register(r)
+	a.StartPurgeSweep()
 
 	// In prod, serve the built frontend from the same origin (catch-all).
 	if cfg.Frontend.StaticDir != "" {

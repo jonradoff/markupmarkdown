@@ -25,7 +25,7 @@ import { useDialog } from "../components/Dialogs";
 import { formatRelative } from "../utils/format";
 import { downloadAsMarkdown } from "../utils/download";
 
-type Filter = "open" | "resolved" | "all";
+type Filter = "open" | "unread" | "resolved" | "all";
 
 export default function DocumentPage() {
   const { id } = useParams<{ id: string }>();
@@ -123,7 +123,14 @@ export default function DocumentPage() {
     const el = contentRef.current;
     if (!el || !doc) return;
     const ranges = comments
-      .filter((c) => (filter === "all" ? true : filter === "resolved" ? c.resolved : !c.resolved))
+      .filter((c) => {
+        switch (filter) {
+          case "all": return true;
+          case "resolved": return c.resolved;
+          case "unread": return isUnread(c);
+          default: return !c.resolved;
+        }
+      })
       .map((c) => ({
         id: c.id,
         start: c.anchor.start,
@@ -278,16 +285,40 @@ export default function DocumentPage() {
     setComments((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
   }
 
+  // A comment counts as "unread" when it's newer than the user's previous
+  // open of this doc. Anchored on previouslyViewedAt from getDocument —
+  // first-ever visit returns no prior, so nothing is unread.
+  const isUnread = useCallback(
+    (c: Comment) => {
+      if (!doc?.previouslyViewedAt) return false;
+      const prev = Date.parse(doc.previouslyViewedAt);
+      // Latest activity on a thread = max(comment.updatedAt, last reply).
+      let latest = Date.parse(c.updatedAt);
+      for (const r of c.replies) {
+        const t = Date.parse(r.updatedAt);
+        if (t > latest) latest = t;
+      }
+      return latest > prev;
+    },
+    [doc?.previouslyViewedAt]
+  );
+
   const visibleComments = useMemo(() => {
     return comments
-      .filter((c) =>
-        filter === "all" ? true : filter === "resolved" ? c.resolved : !c.resolved
-      )
+      .filter((c) => {
+        switch (filter) {
+          case "all": return true;
+          case "resolved": return c.resolved;
+          case "unread": return isUnread(c);
+          default: return !c.resolved; // "open"
+        }
+      })
       .sort((a, b) => a.anchor.start - b.anchor.start);
-  }, [comments, filter]);
+  }, [comments, filter, isUnread]);
 
   const openCount = comments.filter((c) => !c.resolved).length;
   const resolvedCount = comments.length - openCount;
+  const unreadCount = comments.filter(isUnread).length;
 
   async function handleReviseClick() {
     if (!user) {
@@ -588,6 +619,13 @@ export default function DocumentPage() {
                 Open <Count n={openCount} />
               </FilterButton>
               <FilterButton
+                active={filter === "unread"}
+                highlight={unreadCount > 0}
+                onClick={() => setFilter("unread")}
+              >
+                Unread <Count n={unreadCount} pulse={unreadCount > 0 && filter !== "unread"} />
+              </FilterButton>
+              <FilterButton
                 active={filter === "resolved"}
                 onClick={() => setFilter("resolved")}
               >
@@ -744,10 +782,12 @@ function FilterButton({
   active,
   onClick,
   children,
+  highlight,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  highlight?: boolean;
 }) {
   return (
     <button
@@ -756,7 +796,9 @@ function FilterButton({
         "px-2 py-1 rounded font-medium",
         active
           ? "bg-accent text-accent-fg"
-          : "text-muted hover:bg-soft",
+          : highlight
+            ? "text-accent hover:bg-accent-soft"
+            : "text-muted hover:bg-soft",
       ].join(" ")}
     >
       {children}
@@ -764,8 +806,17 @@ function FilterButton({
   );
 }
 
-function Count({ n }: { n: number }) {
+function Count({ n, pulse }: { n: number; pulse?: boolean }) {
   return (
-    <span className="ml-1 opacity-70 text-[10px] tabular-nums">{n}</span>
+    <span
+      className={[
+        "ml-1 text-[10px] tabular-nums",
+        pulse
+          ? "inline-flex items-center justify-center min-w-[1.1rem] px-1 rounded-full bg-danger text-white font-semibold"
+          : "opacity-70",
+      ].join(" ")}
+    >
+      {n}
+    </span>
   );
 }

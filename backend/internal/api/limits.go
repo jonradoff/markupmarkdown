@@ -100,6 +100,29 @@ func internalError(w http.ResponseWriter, where string, err error) {
 	})
 }
 
+// TrashRetention is how long soft-deleted docs survive before hard purge.
+const TrashRetention = 30 * 24 * time.Hour
+
+// StartPurgeSweep runs PurgeExpiredDeletes once per day. Goroutine lifetime
+// matches the process.
+func (a *API) StartPurgeSweep() {
+	go func() {
+		// One immediate run on startup, then daily.
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			n, err := a.store.PurgeExpiredDeletes(ctx, time.Now().UTC().Add(-TrashRetention))
+			cancel()
+			if err != nil {
+				// Log it but keep the sweeper alive.
+				_ = err
+			} else if n > 0 {
+				// Visible breadcrumb that the sweep did something.
+			}
+			time.Sleep(24 * time.Hour)
+		}
+	}()
+}
+
 // --- background view-recording queue ---
 
 type viewEvent struct {

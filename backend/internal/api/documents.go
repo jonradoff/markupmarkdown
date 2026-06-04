@@ -162,9 +162,13 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 
 type documentResponse struct {
 	*models.Document
-	Parent           *parentSummary    `json:"parent,omitempty"`
-	Children         []revisionSummary `json:"children,omitempty"`
-	LatestDescendant *parentSummary    `json:"latestDescendant,omitempty"`
+	Parent             *parentSummary    `json:"parent,omitempty"`
+	Children           []revisionSummary `json:"children,omitempty"`
+	LatestDescendant   *parentSummary    `json:"latestDescendant,omitempty"`
+	// PreviouslyViewedAt is the timestamp of the requester's *previous*
+	// open of this doc, before this response. The frontend uses this to
+	// mark any comment whose updatedAt is newer as "unread". RFC3339 UTC.
+	PreviouslyViewedAt string `json:"previouslyViewedAt,omitempty"`
 }
 
 type parentSummary struct {
@@ -186,12 +190,15 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	// Record the view via the bounded view queue so we don't fan out
-	// unbounded goroutines under load.
+	resp := documentResponse{Document: doc}
+	// Read prior view BEFORE bumping it, so the response reflects the
+	// state the user is about to see (unread = new since last visit).
 	if u := a.currentUser(r); u != nil {
+		if prior, _ := a.store.GetDocumentView(r.Context(), doc.ID, u.ID); prior != nil {
+			resp.PreviouslyViewedAt = prior.LastViewedAt.UTC().Format(time.RFC3339Nano)
+		}
 		a.enqueueView(doc.ID, u.ID)
 	}
-	resp := documentResponse{Document: doc}
 	if doc.ParentID != "" {
 		if parent, _ := a.store.GetDocument(r.Context(), doc.ParentID); parent != nil {
 			resp.Parent = &parentSummary{ID: parent.ID, Title: parent.Title}
@@ -257,11 +264,97 @@ func (a *API) deleteDocument(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	if err := a.store.DeleteDocument(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	// Soft delete — the doc stays in the database for ~30 days so the
+	// user can restore from Trash. PurgeExpiredDeletes (run periodically)
+	// is what eventually removes it for real.
+	if err := a.store.SoftDeleteDocument(r.Context(), id); err != nil {
+		internalError(w, "store.soft_delete", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) listTrash(w http.ResponseWriter, r *http.Request) {
+	user := a.currentUser(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, fetchErrorResponse{
+			Error: "Sign in with GitHub to see your trash.",
+			Kind:  "sign_in_required",
+		})
+		return
+	}
+	docs, err := a.store.ListTrashForUser(r.Context(), user.ID)
+	if err != nil {
+		internalError(w, "store.list_trash", err)
+		return
+	}
+	if docs == nil {
+		docs = []models.Document{}
+	}
+	type summary struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		DeletedAt string `json:"deletedAt"`
+		// Days remaining before the purge sweep removes this doc.
+		DaysLeft int `json:"daysLeft"`
+	}
+	const retentionDays = 30
+	out := make([]summary, 0, len(docs))
+	for _, d := range docs {
+		// Skip private docs the requester has lost GitHub access to.
+		if d.Private {
+			ok, err := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, d.GitHubOwner, d.GitHubRepo)
+			if err != nil || !ok {
+				continue
+			}
+		}
+		if d.DeletedAt == nil {
+			continue
+		}
+		daysSince := int(time.Since(*d.DeletedAt).Hours() / 24)
+		daysLeft := retentionDays - daysSince
+		if daysLeft < 0 {
+			daysLeft = 0
+		}
+		out = append(out, summary{
+			ID:        d.ID,
+			Title:     d.Title,
+			DeletedAt: d.DeletedAt.UTC().Format(time.RFC3339),
+			DaysLeft:  daysLeft,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *API) restoreDocument(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	user := a.currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	doc, err := a.store.GetDeletedDocument(r.Context(), id)
+	if err != nil {
+		internalError(w, "store.get_deleted", err)
+		return
+	}
+	if doc == nil {
+		writeError(w, http.StatusNotFound, "not in trash")
+		return
+	}
+	// Re-run access check on the would-be-restored doc.
+	if doc.Private {
+		ok, err := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, doc.GitHubOwner, doc.GitHubRepo)
+		if err != nil || !ok {
+			writeError(w, http.StatusForbidden, "you no longer have GitHub access to this doc's source")
+			return
+		}
+	}
+	if err := a.store.RestoreDocument(r.Context(), id); err != nil {
+		internalError(w, "store.restore", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
 type fetchErrorAction struct {

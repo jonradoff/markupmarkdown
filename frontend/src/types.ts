@@ -10,6 +10,13 @@ export interface DocumentSummary {
   updatedAt: string;
 }
 
+export interface TrashItem {
+  id: string;
+  title: string;
+  deletedAt: string;
+  daysLeft: number;
+}
+
 export interface RevisionMeta {
   model: string;
   appliedCommentIds: string[];
@@ -47,6 +54,7 @@ export interface MdDocument {
   parent?: ParentSummary;
   children?: RevisionSummary[];
   latestDescendant?: ParentSummary;
+  previouslyViewedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, APIError } from "../api";
-import type { DocumentSummary } from "../types";
+import type { DocumentSummary, TrashItem } from "../types";
 import { formatRelative } from "../utils/format";
 import ErrorBlock from "../components/ErrorBlock";
 import { useDialog } from "../components/Dialogs";
@@ -12,6 +12,8 @@ export default function HomePage() {
   const dialog = useDialog();
   const { user, githubEnabled, loginURL, loading: authLoading } = useAuth();
   const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
+  const [trash, setTrash] = useState<TrashItem[] | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
   const [error, setError] = useState<APIError | null>(null);
 
   const [url, setUrl] = useState("");
@@ -33,6 +35,22 @@ export default function HomePage() {
         setDocs([]);
         return;
       }
+      setErrFrom(err);
+    }
+    // Fetch trash lazily — only signed-in users have one.
+    try {
+      const t = await api.listTrash();
+      setTrash(t);
+    } catch {
+      setTrash([]);
+    }
+  }
+
+  async function restoreFromTrash(id: string) {
+    try {
+      await api.restoreDocument(id);
+      await refresh();
+    } catch (err) {
       setErrFrom(err);
     }
   }
@@ -82,7 +100,7 @@ export default function HomePage() {
   async function handleDelete(id: string, title: string) {
     const ok = await dialog.confirm({
       title: "Delete document?",
-      body: `Delete "${title}" and all its comments? This cannot be undone.`,
+      body: `Delete "${title}" and all its comments? You can restore it from Trash for 30 days.`,
       confirmLabel: "Delete",
       danger: true,
     });
@@ -226,6 +244,45 @@ export default function HomePage() {
             </li>
           ))}
         </ul>
+          )}
+          {trash && trash.length > 0 && (
+            <div className="mt-8">
+              <button
+                onClick={() => setShowTrash((v) => !v)}
+                className="text-xs text-muted hover:text-ink flex items-center gap-1"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showTrash ? "rotate(90deg)" : "" }}>
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                Trash ({trash.length})
+              </button>
+              {showTrash && (
+                <ul className="mt-2 divide-y divide-rule border border-rule rounded-lg bg-card">
+                  {trash.map((t) => (
+                    <li
+                      key={t.id}
+                      className="flex items-center justify-between px-4 py-2.5"
+                    >
+                      <div className="min-w-0 text-sm">
+                        <div className="text-ink truncate">{t.title}</div>
+                        <div className="text-[11px] text-muted">
+                          Deleted {formatRelative(t.deletedAt)} ·{" "}
+                          {t.daysLeft > 0
+                            ? `purged in ${t.daysLeft} day${t.daysLeft === 1 ? "" : "s"}`
+                            : "scheduled for purge"}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => restoreFromTrash(t.id)}
+                        className="text-xs text-accent hover:underline ml-4"
+                      >
+                        Restore
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </>
       )}
