@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // SHA-1 matches Git's blob hash; not used for security
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,16 +18,23 @@ import (
 	"markupmarkdown/internal/models"
 )
 
-// docByIDFilter and docSetSourceBaseline are tiny helpers used by
-// maybeRefreshSourceDrift to keep the source SHA backfill inline
-// without a new store method.
-func docByIDFilter(id string) bson.M { return bson.M{"_id": id} }
-func docSetSourceBaseline(sha string, now time.Time) bson.M {
-	return bson.M{"$set": bson.M{
-		"source_sha":        sha,
-		"source_checked_at": now,
-	}}
+// gitBlobSHA returns the SHA-1 hash Git would assign to `content` if
+// stored as a blob. Format: sha1("blob <size>\0<content>"). We use
+// this at SHA-backfill time so legacy docs (ingested before we
+// tracked source_sha) can still notice upstream drift — by comparing
+// the hash of the stored content to the current GitHub SHA, we know
+// whether the original ingest equals the live upstream file even
+// though we never stamped a baseline at ingest.
+func gitBlobSHA(content string) string {
+	h := sha1.New() //nolint:gosec // git-compatible blob hash, not security
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write([]byte(content))
+	return hex.EncodeToString(h.Sum(nil))
 }
+
+// docByIDFilter — small helper to keep backfill writes inline without
+// inventing a new store method.
+func docByIDFilter(id string) bson.M { return bson.M{"_id": id} }
 
 // sourceCheckTTL is how long we trust a previous drift check before
 // refreshing on doc-open. Short enough that an upstream push is
@@ -93,10 +103,10 @@ func (a *API) runSourceCheck(doc *models.Document, userToken string, force bool)
 			return
 		}
 		if !hadBaseline {
-			now := time.Now().UTC()
-			_, _ = a.store.Documents().UpdateOne(ctx,
-				docByIDFilter(docID),
-				docSetSourceBaseline(sha, now))
+			// Legacy doc: stamp the git blob SHA of the STORED content
+			// as the baseline. If GitHub's current SHA differs, drift
+			// is real — set the drift fields so the banner appears.
+			a.backfillBaseline(ctx, docID, doc.Content, sha)
 			return
 		}
 		prevDrift := doc.SourceLatestSHA != ""
@@ -108,6 +118,30 @@ func (a *API) runSourceCheck(doc *models.Document, userToken string, force bool)
 			a.hub.Broadcast(docID, "doc-updated")
 		}
 	}()
+}
+
+// backfillBaseline stamps a legacy doc with the git blob SHA of its
+// stored content as the baseline. If that doesn't equal the live
+// upstream SHA, also stamps the drift fields — so a file edited
+// upstream BEFORE we ever tracked SHAs still surfaces the banner on
+// the next check. Broadcasts doc-updated when drift is detected.
+func (a *API) backfillBaseline(ctx context.Context, docID, content, upstreamSHA string) {
+	baseline := gitBlobSHA(content)
+	now := time.Now().UTC()
+	set := bson.M{
+		"source_sha":        baseline,
+		"source_checked_at": now,
+	}
+	if upstreamSHA != "" && upstreamSHA != baseline {
+		set["source_latest_sha"] = upstreamSHA
+		set["source_drifted_at"] = now
+	}
+	_, _ = a.store.Documents().UpdateOne(ctx,
+		docByIDFilter(docID),
+		bson.M{"$set": set})
+	if upstreamSHA != "" && upstreamSHA != baseline {
+		a.hub.Broadcast(docID, "doc-updated")
+	}
 }
 
 // checkSourceNow is the handler for POST /api/documents/:id/check-source
@@ -169,15 +203,18 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if doc.SourceSHA == "" {
-		// Backfill the baseline for a legacy doc and return — there's
-		// nothing to compare against yet.
-		now := time.Now().UTC()
-		_, _ = a.store.Documents().UpdateOne(ctx,
-			docByIDFilter(id),
-			docSetSourceBaseline(sha, now))
+		// Legacy doc — backfill baseline from the git blob SHA of
+		// the stored content. If GitHub's current SHA differs, drift
+		// is real even though we never tracked SHA at ingest.
+		a.backfillBaseline(ctx, id, doc.Content, sha)
+		updated, _ := a.store.GetDocument(ctx, id)
+		if updated == nil {
+			updated = doc
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"sourceSha":       sha,
-			"sourceLatestSha": "",
+			"sourceSha":       updated.SourceSHA,
+			"sourceLatestSha": updated.SourceLatestSHA,
+			"sourceDriftedAt": updated.SourceDriftedAt,
 		})
 		return
 	}
