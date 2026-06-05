@@ -139,12 +139,13 @@ export default function HomePage() {
   return (
     <div className="max-w-4xl mx-auto px-6 py-10">
       <h1 className="text-3xl font-semibold tracking-tight mb-2">
-        Comment on any markdown file
+        Google-Docs-style commenting for any Markdown file
       </h1>
       <p className="text-muted mb-8">
-        Paste a URL to a <code className="bg-soft px-1 rounded">.md</code> file
-        (raw or GitHub blob) or upload one from your computer. Select text to
-        leave inline comments — Google Docs style.
+        Paste a GitHub URL or upload a <code className="bg-soft px-1 rounded">.md</code>{" "}
+        file. Drag-select text to leave a margin comment — threaded
+        replies, @-mentions, realtime sync, AI revision via Claude, and an
+        MCP server so agents review alongside humans.
       </p>
 
       <div className="bg-card border border-rule rounded-lg p-5 mb-6">
@@ -213,7 +214,14 @@ export default function HomePage() {
             </p>
           )}
         </div>
-      ) : (
+      ) : null}
+
+      {/* Marketing prose for unauthenticated visitors — also doubles as
+          the visible content most SEO signals reward. Authenticated
+          users see this below their own docs (it's short). */}
+      {!authLoading && !user && <MarketingSections />}
+
+      {user && (
         <>
           <h2 className="text-lg font-semibold mb-3 mt-8">Your documents</h2>
           {docs === null ? (
@@ -310,5 +318,133 @@ export default function HomePage() {
         </>
       )}
     </div>
+  );
+}
+
+// MarketingSections renders the SEO-resonant prose shown to visitors
+// who haven't signed in yet (and serves double duty as the visible
+// content crawlers reward). Section order mirrors the FAQPage schema
+// the backend injects so the on-page Q&As reinforce the structured
+// data.
+function MarketingSections() {
+  return (
+    <section className="mt-12 space-y-12">
+      <div>
+        <h2 className="text-xl font-semibold mb-2">
+          Built for PRDs, RFCs, release notes, and prompt libraries
+        </h2>
+        <p className="text-muted">
+          Markdown is where a lot of real product thinking lives — but the
+          tools for reviewing it are miserable. GitHub PRs force every
+          discussion through a code-review workflow. Pasting into Google Docs
+          drops your formatting. Markupmarkdown brings Google-Docs-style
+          margin comments directly to your <code className="bg-soft px-1 rounded">.md</code>{" "}
+          files, without dragging anyone into a code-review process they
+          don't want.
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold mb-2">
+          Humans and AI agents review the same documents
+        </h2>
+        <p className="text-muted">
+          Markupmarkdown ships an open{" "}
+          <a
+            href="/SKILL.md"
+            className="text-accent hover:underline"
+          >
+            Model Context Protocol server
+          </a>{" "}
+          so AI agents read what humans read, leave threads humans can
+          approve, and apply resolved feedback as new revisions — with
+          explicit human sign-off. Agent comments carry a visible bot badge.
+          The same access checks, rate limits, and validation apply to MCP
+          and REST — no agent-only fast path.
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold mb-2">
+          Open source, self-hosted, bring your own AI key
+        </h2>
+        <p className="text-muted">
+          Everything is{" "}
+          <a
+            href="https://github.com/jonradoff/markupmarkdown"
+            className="text-accent hover:underline"
+          >
+            MIT-licensed on GitHub
+          </a>
+          . One Go binary, a React SPA, MongoDB — designed to deploy on a
+          single Fly.io machine. AI revision uses your own Anthropic API
+          key, stored AES-256-GCM encrypted at rest and deletable any time.
+          Your usage, your bill, your data.
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Frequently asked</h2>
+        <dl className="space-y-5">
+          <div>
+            <dt className="font-medium text-ink">How do I comment on a Markdown file?</dt>
+            <dd className="text-muted mt-1">
+              Paste the URL of any <code className="bg-soft px-1 rounded">.md</code>{" "}
+              file (raw or a <code className="bg-soft px-1 rounded">github.com/.../blob/.../*.md</code>{" "}
+              link) or upload a local file. Drag-select text in the rendered
+              document and click the Comment button that floats next to your
+              selection. Threaded replies, @-mentions, mark-as-done, and
+              reopen are one click each.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">
+              Can I review Markdown files from private GitHub repos?
+            </dt>
+            <dd className="text-muted mt-1">
+              Yes. Sign in with GitHub and you can open files from any repo
+              you have read access to. Private docs are gated on every read
+              by re-verifying your GitHub access to the source repo — losing
+              access means you stop seeing content (and the title)
+              immediately.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">How does AI revision work?</dt>
+            <dd className="text-muted mt-1">
+              Resolve the comments you want applied, click <em>Revise with AI</em>,
+              and Claude Opus 4.7 produces a new revision that incorporates
+              the resolved feedback while changing as little of the rest as
+              possible. The output streams as rendered Markdown; you get a
+              word-level diff before accepting. Saving creates a new child
+              document so revisions form a tree.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">What is the MCP server for?</dt>
+            <dd className="text-muted mt-1">
+              The Model Context Protocol server at{" "}
+              <code className="bg-soft px-1 rounded">/mcp</code> lets AI
+              agents (Claude Desktop, Claude Code, custom MCP clients) read
+              documents, leave threads anchored to text spans, reply to
+              humans, resolve threads, and trigger AI revisions. Agents
+              authenticate via per-user personal access tokens; the same
+              access checks and rate limits apply as the REST API.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Is markupmarkdown free?</dt>
+            <dd className="text-muted mt-1">
+              Yes. MIT-licensed open source. Self-host it on Fly.io with one
+              command, or use the hosted demo at{" "}
+              <a href="https://mumd.metavert.io/" className="text-accent hover:underline">
+                mumd.metavert.io
+              </a>
+              . Bring your own Anthropic API key for AI revision.
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </section>
   );
 }
