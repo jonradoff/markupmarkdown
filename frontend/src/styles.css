@@ -92,6 +92,11 @@ body {
 .mm-prose h2 { font-size: 1.5rem; font-weight: 700; margin: 1.5rem 0 0.75rem; }
 .mm-prose h3 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
 .mm-prose h4 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+/* Padding above when scrolled-to via an in-document anchor so the
+   heading clears any sticky/floating header instead of landing
+   underneath it. */
+.mm-prose h1, .mm-prose h2, .mm-prose h3,
+.mm-prose h4, .mm-prose h5, .mm-prose h6 { scroll-margin-top: 96px; }
 .mm-prose p { margin: 0.75rem 0; }
 .mm-prose ul { list-style: disc; padding-left: 1.5rem; margin: 0.5rem 0; }
 .mm-prose ol { list-style: decimal; padding-left: 1.5rem; margin: 0.5rem 0; }
