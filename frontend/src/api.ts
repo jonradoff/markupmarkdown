@@ -100,12 +100,14 @@ export const api = {
   /** Forces an immediate upstream SHA check (bypasses the server-side
    * TTL) and re-verifies GitHub access. Returns the freshly-computed
    * drift state so the caller can update local doc state without
-   * waiting for an SSE round-trip. */
+   * waiting for an SSE round-trip. rootDocument is set when this doc
+   * is a child revision — the drift state then refers to the root. */
   checkDocumentSource: (id: string) =>
     req<{
       sourceSha?: string;
       sourceLatestSha?: string;
       sourceDriftedAt?: string;
+      rootDocument?: { id: string; title: string };
       checkFailed?: boolean;
     }>(`/api/documents/${id}/check-source`, { method: "POST" }),
 

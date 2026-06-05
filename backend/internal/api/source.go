@@ -47,29 +47,45 @@ const sourceCheckTTL = 60 * time.Second
 // GitHub API calls.
 var sourceCheckInFlight sync.Map // map[string]chan struct{}
 
-// maybeRefreshSourceDrift triggers a background drift check if the
-// cached state on `doc` is stale. The caller's response reflects the
-// CURRENT state (possibly stale); a subsequent open or the SSE
-// "doc-updated" broadcast surfaces the freshly-refreshed banner.
-//
-// For legacy docs ingested before SourceSHA was captured, this also
-// stamps the current SHA as the baseline so future changes can be
-// detected (we won't surface drift on this first check — there's
-// nothing to compare against — but subsequent opens will).
-//
-// If userToken is non-empty it's used for the SHA fetch so private
-// repos work; anonymous calls work for public repos.
+// maybeRefreshSourceDrift triggers a background drift check on the
+// ROOT document of the revision chain. Child revisions inherit their
+// drift state from the root — checking the child directly would
+// compare AI-revised content against the upstream file (different by
+// design) and surface false negatives.
 func (a *API) maybeRefreshSourceDrift(doc *models.Document, userToken string) {
 	if doc == nil {
 		return
 	}
-	if _, _, _, _, ok := deriveGitHubInfo(doc); !ok {
+	root := a.rootForDrift(doc)
+	if root == nil {
 		return
 	}
-	if doc.SourceCheckedAt != nil && time.Since(*doc.SourceCheckedAt) < sourceCheckTTL {
+	if _, _, _, _, ok := deriveGitHubInfo(root); !ok {
 		return
 	}
-	a.runSourceCheck(doc, userToken, false)
+	if root.SourceCheckedAt != nil && time.Since(*root.SourceCheckedAt) < sourceCheckTTL {
+		return
+	}
+	a.runSourceCheck(root, userToken, false)
+}
+
+// rootForDrift returns the root document of the revision chain for
+// drift-tracking purposes. Returns the passed doc when it has no
+// parent, otherwise walks to root.
+func (a *API) rootForDrift(doc *models.Document) *models.Document {
+	if doc == nil {
+		return nil
+	}
+	if doc.ParentID == "" {
+		return doc
+	}
+	ctx, cancel := context.WithTimeout(contextDetached(), 5*time.Second)
+	defer cancel()
+	root, err := a.store.RootDocument(ctx, doc.ID)
+	if err != nil || root == nil {
+		return doc
+	}
+	return root
 }
 
 // runSourceCheck does the actual SHA fetch + persist + broadcast. The
@@ -144,16 +160,16 @@ func (a *API) backfillBaseline(ctx context.Context, docID, content, upstreamSHA 
 	}
 }
 
-// checkSourceNow is the handler for POST /api/documents/:id/check-source
-// — runs synchronously so the response carries the freshly-computed
-// drift state. Also re-verifies GitHub access (busting the access
-// caches first) so a user removed from a private repo gets 403'd on
-// the next tab focus instead of staying in indefinitely.
+// checkSourceNow is the handler for POST /api/documents/:id/check-source.
+// Runs the drift check on the ROOT of the revision chain (so child
+// revisions inherit the original's drift state), busts access caches
+// to re-verify GitHub access, and returns synchronously so the
+// response carries the freshly-computed state.
 func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 
-	// Bust the access caches BEFORE checkDocAccess so the re-verification
-	// hits GitHub rather than returning a stale "still has access" hit.
+	// Re-verify access against the doc the user is viewing (busting
+	// caches first). This catches loss-of-access mid-session.
 	if pre, _ := a.store.GetDocument(r.Context(), id); pre != nil {
 		if owner, repo, ref, p, ok := deriveGitHubInfo(pre); ok {
 			publicFetchCache.invalidate(owner, repo, ref, p)
@@ -168,13 +184,17 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 		a.writeAccessError(w, r, accErr)
 		return
 	}
-	owner, repo, ref, p, ok := deriveGitHubInfo(doc)
+
+	// Pick the doc whose drift state we actually care about: the
+	// chain's root. Revision children intentionally diverge from
+	// upstream — checking them directly is meaningless.
+	target := a.rootForDrift(doc)
+	if target == nil {
+		target = doc
+	}
+	owner, repo, ref, p, ok := deriveGitHubInfo(target)
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"sourceSha":       doc.SourceSHA,
-			"sourceLatestSha": doc.SourceLatestSHA,
-			"sourceDriftedAt": doc.SourceDriftedAt,
-		})
+		writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, false))
 		return
 	}
 	token := ""
@@ -182,9 +202,6 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 		token = u.AccessToken
 	}
 
-	// Sync SHA fetch with a short timeout so this stays responsive on
-	// tab focus. Auth'd first (works for private), anonymous as a
-	// fallback for tokenless cookie sessions.
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	sha, err := auth.FetchGitHubFileSHA(ctx, token, owner, repo, ref, p)
@@ -192,54 +209,55 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 		sha, err = auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
 	}
 	if err != nil {
-		// Can't reach GitHub — return what we have rather than 5xx.
-		writeJSON(w, http.StatusOK, map[string]any{
-			"sourceSha":       doc.SourceSHA,
-			"sourceLatestSha": doc.SourceLatestSHA,
-			"sourceDriftedAt": doc.SourceDriftedAt,
-			"checkFailed":     true,
-		})
+		writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, true))
 		return
 	}
 
-	if doc.SourceSHA == "" {
-		// Legacy doc — backfill baseline from the git blob SHA of
-		// the stored content. If GitHub's current SHA differs, drift
-		// is real even though we never tracked SHA at ingest.
-		a.backfillBaseline(ctx, id, doc.Content, sha)
-		updated, _ := a.store.GetDocument(ctx, id)
-		if updated == nil {
-			updated = doc
+	if target.SourceSHA == "" {
+		a.backfillBaseline(ctx, target.ID, target.Content, sha)
+	} else {
+		prevDrift := target.SourceLatestSHA != ""
+		if err := a.store.SetDocumentSourceCheck(ctx, target.ID, sha); err != nil {
+			internalError(w, "store.set_source_check", err)
+			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"sourceSha":       updated.SourceSHA,
-			"sourceLatestSha": updated.SourceLatestSHA,
-			"sourceDriftedAt": updated.SourceDriftedAt,
-		})
-		return
+		nowDrift := sha != target.SourceSHA
+		if nowDrift != prevDrift {
+			a.hub.Broadcast(target.ID, "doc-updated")
+			if target.ID != doc.ID {
+				a.hub.Broadcast(doc.ID, "doc-updated")
+			}
+		}
 	}
 
-	prevDrift := doc.SourceLatestSHA != ""
-	if err := a.store.SetDocumentSourceCheck(ctx, id, sha); err != nil {
-		internalError(w, "store.set_source_check", err)
-		return
-	}
-	nowDrift := sha != doc.SourceSHA
-	if nowDrift != prevDrift {
-		a.hub.Broadcast(id, "doc-updated")
-	}
-
-	// Re-read so we return authoritative state (drift fields cleared
-	// or set per SetDocumentSourceCheck).
-	updated, _ := a.store.GetDocument(ctx, id)
+	updated, _ := a.store.GetDocument(ctx, target.ID)
 	if updated == nil {
-		updated = doc
+		updated = target
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"sourceSha":       updated.SourceSHA,
-		"sourceLatestSha": updated.SourceLatestSHA,
-		"sourceDriftedAt": updated.SourceDriftedAt,
-	})
+	writeJSON(w, http.StatusOK, sourceCheckResponse(doc, updated, false))
+}
+
+// sourceCheckResponse builds the JSON the frontend receives. The
+// drift fields ALWAYS come from the root (target) so a child revision
+// gets the same banner the root would. rootDocument lets the frontend
+// link an "Open original" action when the current doc isn't itself
+// the root.
+func sourceCheckResponse(current, target *models.Document, failed bool) map[string]any {
+	out := map[string]any{
+		"sourceSha":       target.SourceSHA,
+		"sourceLatestSha": target.SourceLatestSHA,
+		"sourceDriftedAt": target.SourceDriftedAt,
+	}
+	if failed {
+		out["checkFailed"] = true
+	}
+	if current.ID != target.ID {
+		out["rootDocument"] = map[string]string{
+			"id":    target.ID,
+			"title": target.Title,
+		}
+	}
+	return out
 }
 
 // reanchor maps each comment's anchor.exact into the new content.

@@ -529,6 +529,33 @@ func (s *Store) ListChildren(ctx context.Context, parentID string) ([]models.Doc
 	return out, nil
 }
 
+// RootDocument walks the parent chain up to the doc that has no parent
+// (the original ingest). Returns the doc itself when it has no parent.
+// Guards against cycles defensively. Used by the source-drift check so
+// child revisions report drift relative to the original source, not
+// against whichever GitHub state happens to match the AI-revised text.
+func (s *Store) RootDocument(ctx context.Context, id string) (*models.Document, error) {
+	seen := map[string]bool{}
+	current := id
+	for !seen[current] {
+		seen[current] = true
+		d, err := s.GetDocument(ctx, current)
+		if err != nil {
+			return nil, err
+		}
+		if d == nil {
+			return nil, nil
+		}
+		if d.ParentID == "" {
+			return d, nil
+		}
+		current = d.ParentID
+	}
+	// Cycle — return whatever we last loaded so callers still get
+	// something usable.
+	return s.GetDocument(ctx, current)
+}
+
 // LatestDescendant walks the revision tree starting at docID, always picking
 // the most recently created child, until it hits a leaf. Returns nil if the
 // given doc has no children. Guards against cycles defensively.

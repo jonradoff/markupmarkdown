@@ -203,6 +203,11 @@ type documentResponse struct {
 	Parent             *parentSummary    `json:"parent,omitempty"`
 	Children           []revisionSummary `json:"children,omitempty"`
 	LatestDescendant   *parentSummary    `json:"latestDescendant,omitempty"`
+	// RootDocument points at the root of the revision chain. Set only
+	// when the current doc is itself a child revision — frontends use
+	// it to render an "Open original" affordance on the source-drift
+	// banner (you sync the root, not the AI-revised child).
+	RootDocument *parentSummary `json:"rootDocument,omitempty"`
 	// PreviouslyViewedAt is the timestamp of the requester's *previous*
 	// open of this doc, before this response. The frontend uses this to
 	// mark any comment whose updatedAt is newer as "unread". RFC3339 UTC.
@@ -238,6 +243,23 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		userToken = u.AccessToken
 	}
 	a.maybeRefreshSourceDrift(doc, userToken)
+
+	// For child revisions, mirror the ROOT's drift state into this
+	// response's source_* fields so the banner shows on the child too
+	// (driven by the original's upstream changes, not the child's
+	// intentionally-divergent content). Also surface RootDocument so
+	// the frontend can offer "Open original".
+	if doc.ParentID != "" {
+		if root, err := a.store.RootDocument(r.Context(), doc.ID); err == nil && root != nil && root.ID != doc.ID {
+			resp.RootDocument = &parentSummary{ID: root.ID, Title: root.Title}
+			rootCopy := *doc
+			rootCopy.SourceSHA = root.SourceSHA
+			rootCopy.SourceLatestSHA = root.SourceLatestSHA
+			rootCopy.SourceDriftedAt = root.SourceDriftedAt
+			rootCopy.SourceCheckedAt = root.SourceCheckedAt
+			resp.Document = &rootCopy
+		}
+	}
 	// Read prior view BEFORE bumping it, so the response reflects the
 	// state the user is about to see (unread = new since last visit).
 	if u := a.currentUser(r); u != nil {

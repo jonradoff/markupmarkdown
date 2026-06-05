@@ -8,6 +8,9 @@ interface Props {
   /** Whether the viewer is allowed to sync (admin scope / cookie session). */
   canSync: boolean;
   onSync: () => Promise<void> | void;
+  /** When set, the current doc is a child revision and sync should
+   * happen on the root. Renders "Open original" instead of "Sync". */
+  rootDoc?: { id: string; title: string };
 }
 
 // Banner shown at the top of the doc page when the source file on GitHub
@@ -19,6 +22,7 @@ export default function SourceDriftBanner({
   driftedAt,
   canSync,
   onSync,
+  rootDoc,
 }: Props) {
   const [busy, setBusy] = useState(false);
   async function handleSync() {
@@ -53,20 +57,42 @@ export default function SourceDriftBanner({
           Source updated on GitHub{when ? ` · noticed ${when}` : ""}
         </div>
         <div className="text-amber-800 dark:text-amber-200/80 mt-0.5">
-          The underlying file has new commits since this doc was cloned. Sync
-          to pull in the latest version — comments are re-anchored
-          automatically where the original quoted text still appears; the rest
-          surface as orphans below the doc with a manual re-anchor flow.
+          {rootDoc ? (
+            <>
+              The original source on GitHub has new commits since{" "}
+              <em>{rootDoc.title}</em> was cloned. This is an AI revision —
+              open the original to sync from GitHub. Comments there are
+              re-anchored automatically where the quote still appears; the
+              rest become orphans you can manually re-anchor.
+            </>
+          ) : (
+            <>
+              The underlying file has new commits since this doc was cloned.
+              Sync to pull in the latest version — comments are re-anchored
+              automatically where the original quoted text still appears; the
+              rest surface as orphans below the doc with a manual re-anchor
+              flow.
+            </>
+          )}
         </div>
         <div className="mt-2 flex items-center gap-2">
-          {canSync && (
-            <button
-              onClick={handleSync}
-              disabled={busy}
-              className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700 disabled:opacity-50"
+          {rootDoc ? (
+            <a
+              href={`/d/${rootDoc.id}`}
+              className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700"
             >
-              {busy ? "Syncing…" : "Sync from GitHub"}
-            </button>
+              Open original
+            </a>
+          ) : (
+            canSync && (
+              <button
+                onClick={handleSync}
+                disabled={busy}
+                className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700 disabled:opacity-50"
+              >
+                {busy ? "Syncing…" : "Sync from GitHub"}
+              </button>
+            )
           )}
           <a
             href={githubURL}

@@ -87,6 +87,11 @@ export interface MdDocument {
   parent?: ParentSummary;
   children?: RevisionSummary[];
   latestDescendant?: ParentSummary;
+  /** Set on child revisions — points at the original ingest. The
+   * source-drift banner uses this for the "Open original" action,
+   * because syncing happens on the root (a child revision is AI-
+   * diverged from upstream by design). */
+  rootDocument?: ParentSummary;
   previouslyViewedAt?: string;
   createdAt: string;
   updatedAt: string;

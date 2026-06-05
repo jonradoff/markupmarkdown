@@ -320,6 +320,7 @@ export default function DocumentPage() {
                 sourceSha: res.sourceSha ?? prev.sourceSha,
                 sourceLatestSha: res.sourceLatestSha ?? "",
                 sourceDriftedAt: res.sourceDriftedAt ?? undefined,
+                rootDocument: res.rootDocument ?? prev.rootDocument,
               }
             : prev
         );
@@ -996,6 +997,7 @@ export default function DocumentPage() {
               driftedAt={doc.sourceDriftedAt}
               canSync={!!user}
               onSync={handleSync}
+              rootDoc={doc.rootDocument}
             />
           )}
 
