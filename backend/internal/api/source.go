@@ -16,6 +16,7 @@ import (
 
 	"markupmarkdown/internal/auth"
 	"markupmarkdown/internal/models"
+	"markupmarkdown/internal/render"
 )
 
 // gitBlobSHA returns the SHA-1 hash Git would assign to `content` if
@@ -277,6 +278,15 @@ func sourceCheckResponse(current, target *models.Document, failed bool) map[stri
 // Already-orphan comments are reconsidered too: if the user re-edited
 // the source to bring the quote back, the comment un-orphans.
 func reanchorComments(comments []models.Comment, newContent string) []reanchorResult {
+	// Comments are anchored against the RENDERED textContent of the
+	// markdown — that's what the user selected from in the browser. So
+	// the re-anchor lookup has to be against the same plain-text view
+	// of the new content, not the raw markdown source. Searching the
+	// source directly orphans any comment whose quoted text spans an
+	// inline-formatting marker (`**bold**`, `_italic_`, `` `code` ``,
+	// etc.) — those markers don't appear in the textContent the
+	// user originally selected.
+	plain := render.PlainText(newContent)
 	out := make([]reanchorResult, len(comments))
 	for i := range comments {
 		c := &comments[i]
@@ -292,7 +302,10 @@ func reanchorComments(comments []models.Comment, newContent string) []reanchorRe
 			out[i] = reanchorResult{ID: c.ID, Status: reanchorOrphan}
 			continue
 		}
-		if strings.Contains(newContent, exact) {
+		// Primary check: plain text. Fall back to raw source so we
+		// don't accidentally orphan code-block / metadata anchors
+		// PlainText might collapse.
+		if strings.Contains(plain, exact) || strings.Contains(newContent, exact) {
 			out[i] = reanchorResult{ID: c.ID, Status: reanchorClean, Exact: exact}
 			continue
 		}
@@ -530,7 +543,9 @@ func (a *API) patchCommentAnchor(w http.ResponseWriter, r *http.Request) {
 // re-anchor flow. start/end are textContent positions from the
 // frontend's getSelectionAnchor and so cannot be indexed directly into
 // the markdown source content — we only require that exact appears
-// somewhere in the source as a sanity check.
+// somewhere in the rendered plain text (or in the raw source as a
+// fallback for code-block / metadata selections that the plain-text
+// pass might collapse).
 func validateManualAnchor(req patchCommentAnchorRequest, content string) error {
 	if req.Start < 0 || req.End <= req.Start {
 		return errors.New("invalid anchor range")
@@ -541,8 +556,11 @@ func validateManualAnchor(req patchCommentAnchorRequest, content string) error {
 	if len(req.Exact) > maxAnchorExactLen {
 		return errors.New("anchor.exact too long")
 	}
-	if !strings.Contains(content, req.Exact) {
-		return errors.New("anchor.exact not found in document")
+	if strings.Contains(render.PlainText(content), req.Exact) {
+		return nil
 	}
-	return nil
+	if strings.Contains(content, req.Exact) {
+		return nil
+	}
+	return errors.New("anchor.exact not found in document")
 }
