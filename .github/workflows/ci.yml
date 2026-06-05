@@ -103,12 +103,15 @@ jobs:
             go tool cover -func=coverage.out | tail -1
           fi
 
+      # Public repo — codecov-action v5 supports tokenless uploads from
+      # PRs and pushes to master against GitHub-hosted repos. If a
+      # CODECOV_TOKEN secret is set we'll use it; otherwise the action
+      # falls back to the tokenless flow.
       - name: Upload coverage to Codecov
-        if: always() && env.CODECOV_TOKEN != ''
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        if: always()
         uses: codecov/codecov-action@v5
         with:
           files: backend/coverage.out
           flags: backend
           token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
