@@ -390,6 +390,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  /** Save a human-authored edit as a new revision in the chain.
+   * Returns the new child doc. */
+  createManualRevision: (
+    documentId: string,
+    payload: { content: string; note?: string }
+  ) =>
+    req<MdDocument>(`/api/documents/${documentId}/manual-revisions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 
   listTokens: () => req<APIToken[]>("/api/me/tokens"),
   createToken: (input: {

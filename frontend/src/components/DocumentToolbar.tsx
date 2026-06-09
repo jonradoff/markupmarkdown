@@ -14,6 +14,7 @@ interface Props {
   signedIn: boolean;
   onRename: () => void;
   onRevise: () => void;
+  onEdit: () => void;
   onShare: () => void;
   onDownload: () => void;
   onDelete: () => void;
@@ -25,6 +26,7 @@ export default function DocumentToolbar({
   signedIn,
   onRename,
   onRevise,
+  onEdit,
   onShare,
   onDownload,
   onDelete,
@@ -51,6 +53,17 @@ export default function DocumentToolbar({
           {doc.title}
         </button>
         <div className="flex items-center gap-3 text-sm shrink-0">
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-rule text-ink font-medium hover:bg-soft"
+            title="Edit the Markdown directly. Saving creates a new revision."
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+            Edit
+          </button>
           <button
             onClick={onRevise}
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-accent-fg font-medium hover:opacity-90"
@@ -86,9 +99,15 @@ export default function DocumentToolbar({
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 2 9 9l-7 1 5 5-1 7 6-4 6 4-1-7 5-5-7-1z" />
           </svg>
-          AI-revised by {doc.revisionMeta.generatedBy} — applied{" "}
-          {doc.revisionMeta.appliedCommentIds.length} comment
-          {doc.revisionMeta.appliedCommentIds.length === 1 ? "" : "s"}
+          {doc.revisionMeta.model === "manual" ? (
+            <>Manual edit by {doc.revisionMeta.generatedBy}</>
+          ) : (
+            <>
+              AI-revised by {doc.revisionMeta.generatedBy} — applied{" "}
+              {doc.revisionMeta.appliedCommentIds.length} comment
+              {doc.revisionMeta.appliedCommentIds.length === 1 ? "" : "s"}
+            </>
+          )}
         </div>
       )}
 

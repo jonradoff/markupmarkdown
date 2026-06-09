@@ -81,6 +81,7 @@ func (a *API) Register(r *mux.Router) {
 
 	r.HandleFunc("/api/documents/{id}/revise", a.previewRevision).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/revisions", a.acceptRevision).Methods("POST")
+	r.HandleFunc("/api/documents/{id}/manual-revisions", a.createManualRevision).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/mention-candidates", a.listMentionCandidates).Methods("GET")
 
 	r.HandleFunc("/api/me/notifications", a.listNotifications).Methods("GET")

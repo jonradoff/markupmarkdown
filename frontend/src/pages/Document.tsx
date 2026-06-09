@@ -20,6 +20,7 @@ import { FilterButton, Count } from "../components/CommentFilterButtons";
 import CommentStepNav from "../components/CommentStepNav";
 import SourceDriftBanner from "../components/SourceDriftBanner";
 import MergeModal from "../components/MergeModal";
+import EditorPane from "../components/EditorPane";
 import OrphanCommentCard from "../components/OrphanCommentCard";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
@@ -102,6 +103,11 @@ export default function DocumentPage() {
   // showMerge holds the modal state for the 3-way merge flow. Opened
   // when the user clicks the drift banner's merge button.
   const [showMerge, setShowMerge] = useState(false);
+  // editing toggles the doc page into Markdown-editor mode. Saving
+  // creates a new revision in the chain (manual edit) and navigates
+  // to it; the editor pane handles the textarea + live preview.
+  const [editing, setEditing] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -569,6 +575,25 @@ export default function DocumentPage() {
     }
   }
 
+  // Save a manual edit — creates a new revision in the chain. We
+  // navigate to the new doc afterwards so the user is reading the
+  // version they just wrote. The leaf-dedup in the home list means
+  // the prior version doesn't clutter the recents.
+  async function handleManualSave(content: string) {
+    if (!doc || editSaving) return;
+    setEditSaving(true);
+    try {
+      const next = await api.createManualRevision(doc.id, { content });
+      setEditing(false);
+      toast.success("Saved as a new revision.");
+      navigate(`/d/${next.id}`);
+    } catch (err) {
+      toastError(err, "Couldn't save your edit.");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   // Called by MergeModal after a successful merge accept. Refetch
   // doc + comments so the user sees the merged content + re-anchored
   // comments immediately. SSE will broadcast to any other open viewers.
@@ -978,6 +1003,7 @@ export default function DocumentPage() {
             signedIn={!!user}
             onRename={renameDoc}
             onRevise={handleReviseClick}
+            onEdit={() => withIdentity(() => setEditing(true))}
             onShare={() => setShowShare(true)}
             onDownload={handleDownload}
             onDelete={deleteDoc}
@@ -1013,12 +1039,23 @@ export default function DocumentPage() {
             </div>
           )}
 
-          {/* Rendered markdown */}
-          <MarkdownRender
-            ref={contentRef}
-            content={doc.content}
-            baseUrl={baseURLForDoc(doc.sourceUrl)}
-          />
+          {/* Editor mode replaces the rendered markdown with a textarea +
+              live preview. Comments + drift banner stay visible above. */}
+          {editing ? (
+            <EditorPane
+              initialContent={doc.content}
+              sourceUrl={doc.sourceUrl}
+              saving={editSaving}
+              onSave={handleManualSave}
+              onCancel={() => setEditing(false)}
+            />
+          ) : (
+            <MarkdownRender
+              ref={contentRef}
+              content={doc.content}
+              baseUrl={baseURLForDoc(doc.sourceUrl)}
+            />
+          )}
 
           {orphanComments.length > 0 && (
             <div className="mt-10 pt-6 border-t border-rule">
