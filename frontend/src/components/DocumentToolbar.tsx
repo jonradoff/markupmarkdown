@@ -15,6 +15,7 @@ interface Props {
   onRename: () => void;
   onRevise: () => void;
   onEdit: () => void;
+  onPushback: () => void;
   onShare: () => void;
   onDownload: () => void;
   onDelete: () => void;
@@ -27,10 +28,14 @@ export default function DocumentToolbar({
   onRename,
   onRevise,
   onEdit,
+  onPushback,
   onShare,
   onDownload,
   onDelete,
 }: Props) {
+  const isGitHubDoc = Boolean(
+    doc.sourceUrl && /^https:\/\/github\.com\//.test(doc.sourceUrl)
+  );
   return (
     <>
       {/* Parent link (if this doc was AI-revised from another) */}
@@ -74,6 +79,17 @@ export default function DocumentToolbar({
             </svg>
             Revise with AI
           </button>
+          {isGitHubDoc && signedIn && (
+            <button
+              onClick={onPushback}
+              className="text-muted hover:text-ink"
+              title="Push this revision back to GitHub (PR or direct commit)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+            </button>
+          )}
           <button onClick={onShare} className="text-muted hover:text-ink" title="Share this document">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="18" cy="5" r="3" />

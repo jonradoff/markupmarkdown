@@ -291,6 +291,174 @@ func FetchGitHubFileSHA(ctx context.Context, accessToken, owner, repo, ref, path
 	return meta.SHA, nil
 }
 
+// RepoInfo is a slim view of the bits we care about from
+// GET /repos/{owner}/{repo}: the default branch (used as the base for
+// a pushback PR) and the user's permission level on the repo.
+type RepoInfo struct {
+	DefaultBranch string `json:"default_branch"`
+	Permissions   struct {
+		Admin    bool `json:"admin"`
+		Maintain bool `json:"maintain"`
+		Push     bool `json:"push"`
+		Pull     bool `json:"pull"`
+	} `json:"permissions"`
+	// HTMLURL is the human URL of the repo, returned for convenience
+	// so callers can link directly without rebuilding it.
+	HTMLURL string `json:"html_url"`
+}
+
+// GetRepoInfo fetches default branch + the user's permissions on the
+// repo. Used by pushback to decide whether direct-commit and PR-create
+// are available for this user/repo combination.
+func GetRepoInfo(ctx context.Context, accessToken, owner, repo string) (*RepoInfo, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s",
+		url.PathEscape(owner), url.PathEscape(repo))
+	info, err := getJSON[RepoInfo](ctx, apiURL, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// branchRef and similar are tiny payload structs for the Git Refs API.
+type branchRef struct {
+	Object struct {
+		SHA string `json:"sha"`
+	} `json:"object"`
+}
+
+// GetBranchSHA returns the head SHA of a branch (or any ref). The
+// pushback flow uses it to (a) anchor a new feature branch and (b)
+// hand the SHA to the Contents PUT call when overwriting a file.
+func GetBranchSHA(ctx context.Context, accessToken, owner, repo, branch string) (string, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/heads/%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch))
+	ref, err := getJSON[branchRef](ctx, apiURL, accessToken)
+	if err != nil {
+		return "", err
+	}
+	return ref.Object.SHA, nil
+}
+
+// CreateBranch creates a new branch named newBranch pointed at fromSHA.
+// Returns a *FetchError with StatusCode 422 if the branch already
+// exists (same surface as other GitHub-API errors so callers can
+// branch on it).
+func CreateBranch(ctx context.Context, accessToken, owner, repo, newBranch, fromSHA string) error {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs",
+		url.PathEscape(owner), url.PathEscape(repo))
+	body := map[string]string{
+		"ref": "refs/heads/" + newBranch,
+		"sha": fromSHA,
+	}
+	return postJSON(ctx, apiURL, accessToken, body, nil)
+}
+
+// PutFileResult captures what callers want back from the Contents PUT:
+// the commit SHA and HTML URL of the new commit on GitHub.
+type PutFileResult struct {
+	Commit struct {
+		SHA     string `json:"sha"`
+		HTMLURL string `json:"html_url"`
+	} `json:"commit"`
+	Content struct {
+		SHA     string `json:"sha"`
+		HTMLURL string `json:"html_url"`
+	} `json:"content"`
+}
+
+// PutFile creates-or-updates a file on a branch via the Contents API.
+// fileSHA is the current blob SHA at path on branch (required when
+// updating; pass "" when creating a new file). The content is sent
+// base64-encoded as the Contents API requires.
+func PutFile(ctx context.Context, accessToken, owner, repo, path, branch, message, content, fileSHA string) (*PutFileResult, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s",
+		url.PathEscape(owner), url.PathEscape(repo), strings.TrimPrefix(path, "/"))
+	body := map[string]any{
+		"message": message,
+		"content": base64.StdEncoding.EncodeToString([]byte(content)),
+		"branch":  branch,
+	}
+	if fileSHA != "" {
+		body["sha"] = fileSHA
+	}
+	var out PutFileResult
+	if err := putJSON(ctx, apiURL, accessToken, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreatePullResult is the slim view of the PR object the pushback
+// flow returns to the frontend.
+type CreatePullResult struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+	State   string `json:"state"`
+}
+
+// CreatePull opens a PR from head → base. Body is optional.
+func CreatePull(ctx context.Context, accessToken, owner, repo, base, head, title, body string) (*CreatePullResult, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls",
+		url.PathEscape(owner), url.PathEscape(repo))
+	payload := map[string]any{
+		"title": title,
+		"head":  head,
+		"base":  base,
+		"body":  body,
+	}
+	var out CreatePullResult
+	if err := postJSON(ctx, apiURL, accessToken, payload, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// postJSON / putJSON are tiny helpers for write calls — same pattern
+// as getJSON. Out can be nil if the caller doesn't need the response.
+func postJSON(ctx context.Context, apiURL, token string, body any, out any) error {
+	return sendJSON(ctx, http.MethodPost, apiURL, token, body, out)
+}
+func putJSON(ctx context.Context, apiURL, token string, body any, out any) error {
+	return sendJSON(ctx, http.MethodPut, apiURL, token, body, out)
+}
+func sendJSON(ctx context.Context, method, apiURL, token string, body any, out any) error {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, apiURL, strings.NewReader(string(buf)))
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &FetchError{
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+			SSOURL:     parseSSOHeader(resp.Header.Get("X-GitHub-SSO")),
+		}
+	}
+	if out != nil {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FetchGitHubFileContent uses the GitHub Contents API to load a file from a
 // (potentially private) repo. Returns the decoded markdown.
 func FetchGitHubFileContent(ctx context.Context, accessToken, owner, repo, ref, path string) (string, error) {

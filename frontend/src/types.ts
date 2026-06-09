@@ -128,6 +128,33 @@ export interface RevisionPreview {
   identical: boolean;
 }
 
+/** Pushback metadata — what /pushback/info returns. Lets the modal
+ * pre-populate fields and decide whether the direct-commit choice is
+ * enabled. */
+export interface PushbackInfo {
+  owner: string;
+  repo: string;
+  path: string;
+  defaultBranch: string;
+  sourceBranch: string;
+  canPushDirect: boolean;
+  canOpenPR: boolean;
+  suggestedBranch: string;
+  suggestedMessage: string;
+  suggestedPRTitle: string;
+  suggestedPRBody: string;
+  repoHtmlUrl: string;
+}
+
+export interface PushbackResult {
+  mode: "pr" | "direct";
+  branch: string;
+  commitSha: string;
+  commitUrl: string;
+  prNumber?: number;
+  prUrl?: string;
+}
+
 /** Result of the streaming POST /api/documents/:id/merge-preview. */
 export interface MergePreview {
   mergedContent: string;

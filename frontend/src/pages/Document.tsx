@@ -21,6 +21,7 @@ import CommentStepNav from "../components/CommentStepNav";
 import SourceDriftBanner from "../components/SourceDriftBanner";
 import MergeModal from "../components/MergeModal";
 import EditorPane from "../components/EditorPane";
+import PushbackModal from "../components/PushbackModal";
 import OrphanCommentCard from "../components/OrphanCommentCard";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
@@ -108,6 +109,7 @@ export default function DocumentPage() {
   // to it; the editor pane handles the textarea + live preview.
   const [editing, setEditing] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  const [showPushback, setShowPushback] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -1004,6 +1006,7 @@ export default function DocumentPage() {
             onRename={renameDoc}
             onRevise={handleReviseClick}
             onEdit={() => withIdentity(() => setEditing(true))}
+            onPushback={() => withIdentity(() => setShowPushback(true))}
             onShare={() => setShowShare(true)}
             onDownload={handleDownload}
             onDelete={deleteDoc}
@@ -1412,6 +1415,16 @@ export default function DocumentPage() {
           doc={doc}
           onClose={() => setShowMerge(false)}
           onMerged={handleMerged}
+        />
+      )}
+
+      {showPushback && (
+        <PushbackModal
+          doc={doc}
+          onClose={() => setShowPushback(false)}
+          onPushed={() => {
+            /* toast handled inside modal */
+          }}
         />
       )}
 

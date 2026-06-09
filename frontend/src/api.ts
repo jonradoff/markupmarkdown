@@ -12,6 +12,8 @@ import type {
   MergePreview,
   NotificationListResponse,
   PatchAnchorRequest,
+  PushbackInfo,
+  PushbackResult,
   RevisionPreview,
   SelfDocRedirect,
   SyncSourceResponse,
@@ -397,6 +399,26 @@ export const api = {
     payload: { content: string; note?: string }
   ) =>
     req<MdDocument>(`/api/documents/${documentId}/manual-revisions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /** Metadata for the Push to GitHub modal — repo permissions + form
+   * defaults. */
+  pushbackInfo: (documentId: string) =>
+    req<PushbackInfo>(`/api/documents/${documentId}/pushback/info`),
+  /** Commit the doc back to its source repo. Mode picks PR vs direct. */
+  pushback: (
+    documentId: string,
+    payload: {
+      mode: "pr" | "direct";
+      branch?: string;
+      commitMessage: string;
+      targetBranch?: string;
+      prTitle?: string;
+      prBody?: string;
+    }
+  ) =>
+    req<PushbackResult>(`/api/documents/${documentId}/pushback`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
