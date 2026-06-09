@@ -76,6 +76,16 @@ type Document struct {
 // RevisionMeta records how an AI-generated revision was produced. This is
 // purely informational — used to surface "AI-revised, applied N comments" on
 // the doc page and for the version-history sidebar.
+//
+// AncestorSourceSHA and AncestorContent capture the state of the parent
+// doc at the moment the revision was generated. They are the "common
+// ancestor" used by Merge to reconcile this revision with later upstream
+// changes — a 3-way merge needs (ancestor, ours, theirs) where ours is
+// the current child content, theirs is the new upstream content, and
+// ancestor is the source content this revision was originally based on.
+// Without ancestor_content, a child whose upstream changes is locked
+// out of clean merging and falls back to the older replace-in-place
+// behaviour.
 type RevisionMeta struct {
 	Model             string    `bson:"model" json:"model"`
 	AppliedCommentIDs []string  `bson:"applied_comment_ids" json:"appliedCommentIds"`
@@ -84,6 +94,14 @@ type RevisionMeta struct {
 	GeneratedBy       string    `bson:"generated_by" json:"generatedBy"` // display name
 	GeneratedByID     string    `bson:"generated_by_id,omitempty" json:"-"`
 	GeneratedAt       time.Time `bson:"generated_at" json:"generatedAt"`
+	// AncestorSourceSHA is the source_sha of the parent at the moment the
+	// revision was generated. Empty for revisions created before the
+	// merge engine existed.
+	AncestorSourceSHA string `bson:"ancestor_source_sha,omitempty" json:"ancestorSourceSha,omitempty"`
+	// AncestorContent is the verbatim parent content the AI revision was
+	// based on. Used as the "common ancestor" in 3-way merge. Excluded
+	// from JSON to avoid doubling the size of every doc response.
+	AncestorContent string `bson:"ancestor_content,omitempty" json:"-"`
 }
 
 // UserSecrets holds per-user encrypted credentials. One document per user.

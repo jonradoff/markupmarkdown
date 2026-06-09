@@ -33,6 +33,12 @@ type patchDocumentRequest struct {
 // docs they created, AI-revised, or commented/replied on. Private docs the
 // user has lost GitHub access to are filtered out. Unauthenticated callers
 // get 401 — the frontend shows a "sign in to see your files" message.
+//
+// Results are deduplicated by revision lineage: if the user has touched
+// any doc in a revision chain (root, intermediate revision, or leaf), the
+// list returns ONE entry — the chain's leaf — with revisionCount counting
+// every node in the chain. This keeps the list scannable when AI
+// revisions multiply the row count of a single underlying document.
 func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 	user := a.currentUser(r)
 	if user == nil {
@@ -43,13 +49,13 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	docs, err := a.store.ListDocumentsForUser(r.Context(), user.ID)
+	touched, err := a.store.ListDocumentsForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if docs == nil {
-		docs = []models.Document{}
+	if touched == nil {
+		touched = []models.Document{}
 	}
 
 	type summary struct {
@@ -62,30 +68,110 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 		GitHubRepo  string `json:"githubRepo,omitempty"`
 		CreatedAt   string `json:"createdAt"`
 		UpdatedAt   string `json:"updatedAt"`
+		// RevisionCount is the number of nodes in this chain (1 = no
+		// revisions, 3 = root + 2 AI revisions, etc). Lets the
+		// frontend render "AI-revised · N versions" inline.
+		RevisionCount int `json:"revisionCount,omitempty"`
+		// RootID is the root of the chain. Only set when the entry
+		// has been promoted from a touched ancestor to its leaf;
+		// frontend uses it for the revision-history popover.
+		RootID string `json:"rootId,omitempty"`
 	}
-	out := make([]summary, 0, len(docs))
-	for _, d := range docs {
-		// Filter private docs the user has lost access to. Public docs
-		// pass through automatically.
-		if d.Private {
-			ok, err := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, d.GitHubOwner, d.GitHubRepo)
+
+	// Group every touched doc by its chain root. We then keep ONE
+	// entry per root — the chain's leaf — so users see "the current
+	// state" of every doc they've worked on, not every snapshot.
+	seenRoot := map[string]bool{}
+	out := make([]summary, 0, len(touched))
+	for _, d := range touched {
+		root := &d
+		if d.ParentID != "" {
+			if r, err := a.store.RootDocument(r.Context(), d.ID); err == nil && r != nil {
+				root = r
+			}
+		}
+		if seenRoot[root.ID] {
+			continue
+		}
+		seenRoot[root.ID] = true
+
+		// Walk to leaf so the entry surfaces the current state.
+		leaf := root
+		if descendant, err := a.store.LatestDescendant(r.Context(), root.ID); err == nil && descendant != nil {
+			leaf = descendant
+		}
+
+		// Access check on the leaf (private docs the viewer lost
+		// GitHub access to drop out of the list entirely).
+		if leaf.Private {
+			ok, err := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, leaf.GitHubOwner, leaf.GitHubRepo)
 			if err != nil || !ok {
 				continue
 			}
 		}
+
+		// Chain depth: root → ... → leaf. Cheap walk via ListChildren.
+		revisionCount := chainDepth(r.Context(), a.store, root.ID, leaf.ID)
+
+		rootID := ""
+		if leaf.ID != root.ID {
+			rootID = root.ID
+		}
 		out = append(out, summary{
-			ID:          d.ID,
-			Title:       d.Title,
-			SourceURL:   d.SourceURL,
-			Origin:      d.Origin,
-			Private:     d.Private,
-			GitHubOwner: d.GitHubOwner,
-			GitHubRepo:  d.GitHubRepo,
-			CreatedAt:   d.CreatedAt.UTC().Format(time.RFC3339),
-			UpdatedAt:   d.UpdatedAt.UTC().Format(time.RFC3339),
+			ID:            leaf.ID,
+			Title:         leaf.Title,
+			SourceURL:     leaf.SourceURL,
+			Origin:        leaf.Origin,
+			Private:       leaf.Private,
+			GitHubOwner:   leaf.GitHubOwner,
+			GitHubRepo:    leaf.GitHubRepo,
+			CreatedAt:     leaf.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:     leaf.UpdatedAt.UTC().Format(time.RFC3339),
+			RevisionCount: revisionCount,
+			RootID:        rootID,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// chainDepth walks from rootID via the most-recently-created child
+// edge to leafID and returns the number of nodes traversed (>=1).
+// Safe against cycles; returns 1 if it can't see past the root.
+func chainDepth(ctx context.Context, s docStore, rootID, leafID string) int {
+	if rootID == leafID {
+		return 1
+	}
+	depth := 1
+	current := rootID
+	seen := map[string]bool{rootID: true}
+	for depth < 64 { // 64 == many more AI revisions than anyone would do
+		children, err := s.ListChildren(ctx, current)
+		if err != nil || len(children) == 0 {
+			break
+		}
+		next := children[0]
+		for i := 1; i < len(children); i++ {
+			if children[i].CreatedAt.After(next.CreatedAt) {
+				next = children[i]
+			}
+		}
+		if seen[next.ID] {
+			break
+		}
+		seen[next.ID] = true
+		depth++
+		current = next.ID
+		if current == leafID {
+			break
+		}
+	}
+	return depth
+}
+
+// docStore is the minimal store surface chainDepth needs. Lets us
+// test the helper with a stub.
+type docStore interface {
+	ListChildren(ctx context.Context, parentID string) ([]models.Document, error)
 }
 
 func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {

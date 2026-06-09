@@ -19,6 +19,7 @@ import DocumentToolbar from "../components/DocumentToolbar";
 import { FilterButton, Count } from "../components/CommentFilterButtons";
 import CommentStepNav from "../components/CommentStepNav";
 import SourceDriftBanner from "../components/SourceDriftBanner";
+import MergeModal from "../components/MergeModal";
 import OrphanCommentCard from "../components/OrphanCommentCard";
 import { getAuthor } from "../utils/author";
 import { useAuth } from "../auth";
@@ -98,7 +99,9 @@ export default function DocumentPage() {
   // sidebar. Doc-level comments have an empty anchor (no inline
   // highlight) and are listed in their own section.
   const [docLevelOpen, setDocLevelOpen] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  // showMerge holds the modal state for the 3-way merge flow. Opened
+  // when the user clicks the drift banner's merge button.
+  const [showMerge, setShowMerge] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -566,29 +569,18 @@ export default function DocumentPage() {
     }
   }
 
-  // Pull the latest source from GitHub, re-anchor comments where the
-  // quote still appears, and surface the rest as orphans. Lives behind
-  // the SourceDriftBanner; SSE will broadcast doc-updated + comments-
-  // updated so any open viewer sees the result without a page reload.
-  async function handleSync() {
-    if (!doc || syncing) return;
-    setSyncing(true);
+  // Called by MergeModal after a successful merge accept. Refetch
+  // doc + comments so the user sees the merged content + re-anchored
+  // comments immediately. SSE will broadcast to any other open viewers.
+  async function handleMerged() {
+    if (!id) return;
     try {
-      const result = await api.syncDocumentSource(doc.id);
-      // Refetch the doc to pick up the new content + cleared drift fields.
-      const next = await api.getDocument(doc.id);
+      const next = await api.getDocument(id);
       setDoc(next);
-      const cs = await api.listComments(doc.id);
+      const cs = await api.listComments(id);
       applyMutation(() => cs);
-      const msg =
-        result.orphanCount > 0
-          ? `Synced — re-anchored ${result.cleanCount}, ${result.orphanCount} orphan${result.orphanCount === 1 ? "" : "s"} need manual re-anchor.`
-          : `Synced — re-anchored ${result.cleanCount} comment${result.cleanCount === 1 ? "" : "s"}.`;
-      toast.success(msg);
     } catch (err) {
-      toastError(err, "Couldn't sync from GitHub.");
-    } finally {
-      setSyncing(false);
+      toastError(err, "Couldn't refresh after the merge.");
     }
   }
 
@@ -996,8 +988,8 @@ export default function DocumentPage() {
               githubURL={doc.sourceUrl}
               driftedAt={doc.sourceDriftedAt}
               canSync={!!user}
-              onSync={handleSync}
-              rootDoc={doc.rootDocument}
+              onMerge={() => setShowMerge(true)}
+              isRevision={Boolean(doc.parentId || doc.revisionMeta)}
             />
           )}
 
@@ -1375,6 +1367,14 @@ export default function DocumentPage() {
             setShowRevise(false);
             navigate(`/d/${newDoc.id}`);
           }}
+        />
+      )}
+
+      {showMerge && (
+        <MergeModal
+          doc={doc}
+          onClose={() => setShowMerge(false)}
+          onMerged={handleMerged}
         />
       )}
 

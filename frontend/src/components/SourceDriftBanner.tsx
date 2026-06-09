@@ -1,16 +1,17 @@
-import { useState } from "react";
-
 interface Props {
   /** Owner / repo / file path on GitHub, for the "View on GitHub" link. */
   githubURL: string;
   /** When drift was first observed. */
   driftedAt?: string;
-  /** Whether the viewer is allowed to sync (admin scope / cookie session). */
+  /** Whether the viewer is allowed to merge (admin scope / cookie session). */
   canSync: boolean;
-  onSync: () => Promise<void> | void;
-  /** When set, the current doc is a child revision and sync should
-   * happen on the root. Renders "Open original" instead of "Sync". */
-  rootDoc?: { id: string; title: string };
+  /** Opens the merge modal. For non-revisions it's a trivial replace;
+   * for revisions it runs the 3-way Claude merge with a preview. */
+  onMerge: () => void;
+  /** True when this doc is an AI revision (has revision_meta). The
+   * banner copy adapts to explain the merge will reconcile both
+   * branches' edits. */
+  isRevision: boolean;
 }
 
 // Banner shown at the top of the doc page when the source file on GitHub
@@ -21,19 +22,9 @@ export default function SourceDriftBanner({
   githubURL,
   driftedAt,
   canSync,
-  onSync,
-  rootDoc,
+  onMerge,
+  isRevision,
 }: Props) {
-  const [busy, setBusy] = useState(false);
-  async function handleSync() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await onSync();
-    } finally {
-      setBusy(false);
-    }
-  }
   const when = driftedAt
     ? new Date(driftedAt).toLocaleString(undefined, {
         month: "short",
@@ -57,18 +48,18 @@ export default function SourceDriftBanner({
           Source updated on GitHub{when ? ` · noticed ${when}` : ""}
         </div>
         <div className="text-amber-800 dark:text-amber-200/80 mt-0.5">
-          {rootDoc ? (
+          {isRevision ? (
             <>
-              The original source on GitHub has new commits since{" "}
-              <em>{rootDoc.title}</em> was cloned. This is an AI revision —
-              open the original to sync from GitHub. Comments there are
-              re-anchored automatically where the quote still appears; the
-              rest become orphans you can manually re-anchor.
+              This document is an AI revision; the original source on GitHub
+              has new commits since it was generated. The merge runs a
+              Claude-powered 3-way reconciliation so both the upstream edits
+              and your AI revision land in the result. You'll get a diff
+              preview before anything is saved.
             </>
           ) : (
             <>
               The underlying file has new commits since this doc was cloned.
-              Sync to pull in the latest version — comments are re-anchored
+              Merge to pull in the latest version — comments are re-anchored
               automatically where the original quoted text still appears; the
               rest surface as orphans below the doc with a manual re-anchor
               flow.
@@ -76,23 +67,13 @@ export default function SourceDriftBanner({
           )}
         </div>
         <div className="mt-2 flex items-center gap-2">
-          {rootDoc ? (
-            <a
-              href={`/d/${rootDoc.id}`}
+          {canSync && (
+            <button
+              onClick={onMerge}
               className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700"
             >
-              Open original
-            </a>
-          ) : (
-            canSync && (
-              <button
-                onClick={handleSync}
-                disabled={busy}
-                className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700 disabled:opacity-50"
-              >
-                {busy ? "Syncing…" : "Sync from GitHub"}
-              </button>
-            )
+              Merge changes from GitHub
+            </button>
           )}
           <a
             href={githubURL}

@@ -6,6 +6,10 @@ export interface DocumentSummary {
   private?: boolean;
   githubOwner?: string;
   githubRepo?: string;
+  /** Total nodes in this doc's revision chain (1 = no revisions). */
+  revisionCount?: number;
+  /** Root doc id when the listed entry is itself a child revision. */
+  rootId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -122,6 +126,22 @@ export interface RevisionPreview {
   costEstimateUsd: number;
   appliedCommentIds: string[];
   identical: boolean;
+}
+
+/** Result of the streaming POST /api/documents/:id/merge-preview. */
+export interface MergePreview {
+  mergedContent: string;
+  upstreamContent: string;
+  upstreamSourceSha: string;
+  ancestorSourceSha: string;
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  costEstimateUsd: number;
+  identical: boolean;
+  /** True when ancestor==upstream, ours==upstream, or ancestor==ours.
+   * No Claude call was made; the merged content is the trivial result. */
+  noMergeNeeded?: boolean;
 }
 
 export interface Anchor {

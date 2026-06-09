@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // SHA-1 matches Git's blob hash; not used for security
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"markupmarkdown/internal/ai"
 	"markupmarkdown/internal/auth"
 	"markupmarkdown/internal/models"
 	"markupmarkdown/internal/render"
@@ -449,6 +451,333 @@ func (a *API) syncDocumentSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":          id,
 		"sourceSha":   meta.SHA,
+		"cleanCount":  cleanCount,
+		"orphanCount": orphanCount,
+	})
+}
+
+// previewMergeResponse is the SSE "done" payload from mergePreview. The
+// frontend caches this for the matching mergeAccept call so we don't
+// double-bill the user's Anthropic key by re-running the merge.
+type previewMergeResponse struct {
+	MergedContent      string  `json:"mergedContent"`
+	UpstreamContent    string  `json:"upstreamContent"`
+	UpstreamSourceSHA  string  `json:"upstreamSourceSha"`
+	AncestorSourceSHA  string  `json:"ancestorSourceSha"`
+	Model              string  `json:"model"`
+	TokensIn           int64   `json:"tokensIn"`
+	TokensOut          int64   `json:"tokensOut"`
+	CostEstimateUSD    float64 `json:"costEstimateUsd"`
+	Identical          bool    `json:"identical"`
+	NoMergeNeeded      bool    `json:"noMergeNeeded"`
+}
+
+// mergePreviewSource streams a 3-way Claude merge of (ancestor, current
+// doc content, fresh upstream content). For docs without a stored
+// ancestor (i.e., roots, or revisions created before merge support),
+// this falls back to "use upstream verbatim" — same as the old Sync.
+//
+// Endpoint: POST /api/documents/:id/merge-preview (SSE).
+func (a *API) mergePreviewSource(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	doc, accErr := a.checkDocAccess(r, id)
+	if accErr != nil {
+		a.writeAccessError(w, r, accErr)
+		return
+	}
+	if !a.enforceScope(w, r, models.TokenScopeWrite) {
+		return
+	}
+	owner, repo, ref, p, ok := deriveGitHubInfo(doc)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "this document isn't sourced from GitHub")
+		return
+	}
+
+	// Pull latest upstream content + SHA.
+	token := ""
+	user := a.currentUser(r)
+	if user != nil && doc.Private {
+		token = user.AccessToken
+	}
+	meta, err := auth.FetchGitHubFileMeta(r.Context(), token, owner, repo, ref, p)
+	if err != nil {
+		a.writeFetchError(w, r, doc.SourceURL, err)
+		return
+	}
+	if meta.SHA == "" {
+		writeError(w, http.StatusBadGateway, "GitHub returned no SHA for this file")
+		return
+	}
+
+	// Resolve ancestor. For a child revision we have ancestor_content
+	// stamped on revision_meta. For a root we use the doc's current
+	// content (effectively a no-op merge — upstream wins).
+	ancestorContent := ""
+	ancestorSHA := ""
+	if doc.RevisionMeta != nil && doc.RevisionMeta.AncestorContent != "" {
+		ancestorContent = doc.RevisionMeta.AncestorContent
+		ancestorSHA = doc.RevisionMeta.AncestorSourceSHA
+	} else {
+		ancestorContent = doc.Content
+		ancestorSHA = doc.SourceSHA
+	}
+
+	// SSE setup.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher.Flush()
+
+	emit := func(event string, payload any) error {
+		b, _ := json.Marshal(payload)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	// Fast path: ancestor == upstream (no drift) or ours == upstream
+	// (we're already in sync). No Claude call.
+	trim := strings.TrimSpace
+	if trim(ancestorContent) == trim(meta.Content) || trim(doc.Content) == trim(meta.Content) {
+		_ = emit("done", previewMergeResponse{
+			MergedContent:     doc.Content,
+			UpstreamContent:   meta.Content,
+			UpstreamSourceSHA: meta.SHA,
+			AncestorSourceSHA: ancestorSHA,
+			Model:             "noop",
+			Identical:         true,
+			NoMergeNeeded:     true,
+		})
+		return
+	}
+
+	// If this doc has no AI revision (ancestor == current content), the
+	// merge collapses to "use upstream". Still no Claude call needed.
+	if trim(ancestorContent) == trim(doc.Content) {
+		_ = emit("done", previewMergeResponse{
+			MergedContent:     meta.Content,
+			UpstreamContent:   meta.Content,
+			UpstreamSourceSHA: meta.SHA,
+			AncestorSourceSHA: ancestorSHA,
+			Model:             "noop",
+			NoMergeNeeded:     true,
+		})
+		return
+	}
+
+	// Real 3-way merge — needs the user's Anthropic key.
+	if user == nil {
+		_ = emit("error", fetchErrorResponse{
+			Error: "Sign in with GitHub to merge upstream changes into your revision.",
+			Kind:  "sign_in_required",
+		})
+		return
+	}
+	apiKey, err := a.decryptedAnthropicKey(r.Context(), user.ID)
+	if err != nil {
+		_ = emit("error", fetchErrorResponse{
+			Error: "Failed to load your Anthropic API key: " + err.Error(),
+			Kind:  "anthropic_key_error",
+		})
+		return
+	}
+	if apiKey == "" {
+		_ = emit("error", fetchErrorResponse{
+			Error: "Add your Anthropic API key to enable AI-assisted merge.",
+			Kind:  "anthropic_key_missing",
+			Actions: []fetchErrorAction{{
+				Label: "Get an API key",
+				URL:   "https://console.anthropic.com/account/keys",
+			}},
+		})
+		return
+	}
+
+	// Reuse the AI-revision rate-limit + slot bucket — merge is the same
+	// shape (Opus call, streaming output) and we don't want the two
+	// budgets compounding.
+	if !a.rlRevise.Allow("u:" + user.ID) {
+		_ = emit("error", fetchErrorResponse{
+			Error: "You've reached the AI-revision rate limit (30/hour). Try again later.",
+			Kind:  "rate_limited",
+		})
+		return
+	}
+	releaseSlot := a.reviseSlots.Acquire(user.ID)
+	if releaseSlot == nil {
+		_ = emit("error", fetchErrorResponse{
+			Error: "You already have the maximum (3) AI revisions in flight. Wait for one to finish.",
+			Kind:  "rate_limited",
+		})
+		return
+	}
+	defer releaseSlot()
+	releaseSSE := a.sseCounter.Acquire("u:" + user.ID)
+	if releaseSSE == nil {
+		_ = emit("error", fetchErrorResponse{
+			Error: "Too many open streaming connections. Close some tabs and retry.",
+			Kind:  "sse_busy",
+		})
+		return
+	}
+	defer releaseSSE()
+
+	onDelta := func(chunk string) error {
+		return emit("delta", map[string]string{"text": chunk})
+	}
+
+	result, err := ai.Merge(r.Context(), apiKey, doc.Title, ancestorContent, doc.Content, meta.Content, onDelta)
+	if err != nil {
+		var rev *ai.RevisionError
+		if errors.As(err, &rev) {
+			_ = emit("error", a.revisionErrorPayload(rev))
+			return
+		}
+		_ = emit("error", fetchErrorResponse{Error: err.Error(), Kind: "ai_other"})
+		return
+	}
+
+	identical := strings.TrimSpace(result.Content) == strings.TrimSpace(doc.Content)
+	_ = emit("done", previewMergeResponse{
+		MergedContent:     result.Content,
+		UpstreamContent:   meta.Content,
+		UpstreamSourceSHA: meta.SHA,
+		AncestorSourceSHA: ancestorSHA,
+		Model:             result.Model,
+		TokensIn:          result.TokensIn,
+		TokensOut:         result.TokensOut,
+		CostEstimateUSD:   estimateCostUSD(result.Model, result.TokensIn, result.TokensOut),
+		Identical:         identical,
+	})
+}
+
+// mergeAcceptRequest is the body of POST /api/documents/:id/merge-accept
+// — the client roundtrips the previewed merge so we don't run Claude twice.
+type mergeAcceptRequest struct {
+	MergedContent     string `json:"mergedContent"`
+	UpstreamContent   string `json:"upstreamContent"`
+	UpstreamSourceSHA string `json:"upstreamSourceSha"`
+	Model             string `json:"model,omitempty"`
+	TokensIn          int64  `json:"tokensIn,omitempty"`
+	TokensOut         int64  `json:"tokensOut,omitempty"`
+}
+
+// mergeAcceptSource commits a previously-previewed merge: updates the
+// doc's content, bumps the ancestor (so the NEXT drift check compares
+// against the new upstream), clears drift fields, and re-anchors
+// comments against the merged text. This is the endpoint the
+// frontend's "Apply merge" button hits.
+func (a *API) mergeAcceptSource(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	doc, accErr := a.checkDocAccess(r, id)
+	if accErr != nil {
+		a.writeAccessError(w, r, accErr)
+		return
+	}
+	// Merge persists content like accept-revision does — gate at admin.
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+		return
+	}
+	capBody(w, r, maxBodyRevision)
+	var req mergeAcceptRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	content := strings.TrimRight(req.MergedContent, "\n") + "\n"
+	if strings.TrimSpace(content) == "" {
+		writeError(w, http.StatusBadRequest, "mergedContent is required")
+		return
+	}
+	if req.UpstreamSourceSHA == "" {
+		writeError(w, http.StatusBadRequest, "upstreamSourceSha is required")
+		return
+	}
+
+	// Re-anchor comments against the new content (same logic Sync uses).
+	comments, err := a.store.ListComments(r.Context(), id)
+	if err != nil {
+		internalError(w, "store.list_comments", err)
+		return
+	}
+	results := reanchorComments(comments, content)
+	cleanCount, orphanCount := 0, 0
+	now := time.Now().UTC()
+	for i, res := range results {
+		c := &comments[i]
+		switch res.Status {
+		case reanchorClean:
+			update := bson.M{"$set": bson.M{
+				"anchor.start": 0,
+				"anchor.end":   0,
+				"anchor.exact": res.Exact,
+				"updated_at":   now,
+			}}
+			if c.Orphan {
+				update["$unset"] = bson.M{"orphan": "", "original_exact": ""}
+			}
+			if _, err := a.store.Comments().UpdateOne(r.Context(), bson.M{"_id": c.ID}, update); err != nil {
+				internalError(w, "store.update_anchor", err)
+				return
+			}
+			cleanCount++
+		case reanchorOrphan:
+			if c.Orphan {
+				orphanCount++
+				continue
+			}
+			update := bson.M{"$set": bson.M{
+				"orphan":         true,
+				"original_exact": res.OriginalExact,
+				"updated_at":     now,
+			}}
+			if _, err := a.store.Comments().UpdateOne(r.Context(), bson.M{"_id": c.ID}, update); err != nil {
+				internalError(w, "store.mark_orphan", err)
+				return
+			}
+			orphanCount++
+		case reanchorDocLevel:
+			// nothing
+		}
+	}
+
+	// Persist merged content + new ancestor. The ancestor for the
+	// NEXT merge becomes the upstream content we just merged against
+	// (so a future drift check sees the right baseline).
+	set := bson.M{
+		"content":           content,
+		"source_sha":        req.UpstreamSourceSHA,
+		"source_checked_at": now,
+		"updated_at":        now,
+	}
+	if doc.RevisionMeta != nil {
+		set["revision_meta.ancestor_content"] = req.UpstreamContent
+		set["revision_meta.ancestor_source_sha"] = req.UpstreamSourceSHA
+	}
+	update := bson.M{
+		"$set":   set,
+		"$unset": bson.M{"source_latest_sha": "", "source_drifted_at": ""},
+	}
+	if _, err := a.store.Documents().UpdateOne(r.Context(), bson.M{"_id": id}, update); err != nil {
+		internalError(w, "store.merge_accept", err)
+		return
+	}
+
+	a.hub.Broadcast(id, "doc-updated")
+	a.hub.Broadcast(id, "comments-updated")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":          id,
+		"sourceSha":   req.UpstreamSourceSHA,
 		"cleanCount":  cleanCount,
 		"orphanCount": orphanCount,
 	})

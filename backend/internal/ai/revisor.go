@@ -63,15 +63,24 @@ func randomNonce() string {
 	return hex.EncodeToString(b)
 }
 
-// stripDelimiterPatterns removes any literal BEGIN_ORIGINAL_ / END_ORIGINAL_
-// patterns from untrusted content so attackers can't close-then-reopen the
-// fence even by guessing previous nonces.
+// stripDelimiterPatterns removes any literal BEGIN_*_ / END_*_ patterns
+// our LLM envelopes use, so untrusted content can't close-then-reopen
+// the fence even by guessing previous nonces. Covers every section
+// label any of our prompts emit.
 func stripDelimiterPatterns(s string) string {
-	if !strings.Contains(s, "ORIGINAL_") {
+	if !strings.Contains(s, "ORIGINAL_") &&
+		!strings.Contains(s, "ANCESTOR_") &&
+		!strings.Contains(s, "OURS_") &&
+		!strings.Contains(s, "THEIRS_") {
 		return s
 	}
 	out := s
-	for _, pat := range []string{"BEGIN_ORIGINAL_", "END_ORIGINAL_"} {
+	for _, pat := range []string{
+		"BEGIN_ORIGINAL_", "END_ORIGINAL_",
+		"BEGIN_ANCESTOR_", "END_ANCESTOR_",
+		"BEGIN_OURS_", "END_OURS_",
+		"BEGIN_THEIRS_", "END_THEIRS_",
+	} {
 		out = strings.ReplaceAll(out, pat, "[redacted]")
 	}
 	return out

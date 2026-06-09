@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -284,6 +285,11 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 		GitHubRepo:   parent.GitHubRepo,
 		GitHubRef:    parent.GitHubRef,
 		GitHubPath:   parent.GitHubPath,
+		// Source SHA of the revision = the SHA the AI revision was
+		// generated against (same as parent at the moment of revision).
+		// This lets later drift checks compare against the current
+		// upstream and offer a merge.
+		SourceSHA:    parent.SourceSHA,
 		ParentID:     parent.ID,
 		// CreatedByID makes the accepted revision show up in the user's
 		// home list. Without it the doc is reachable only via the parent
@@ -297,6 +303,12 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 			GeneratedBy:       authorName,
 			GeneratedByID:     user.ID,
 			GeneratedAt:       now,
+			// Ancestor pins the parent state at revision time. The
+			// merge engine uses (AncestorContent, child Content, new
+			// upstream content) as the 3-way merge inputs to reconcile
+			// a revised doc with later upstream changes.
+			AncestorSourceSHA: parent.SourceSHA,
+			AncestorContent:   parent.Content,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -305,7 +317,106 @@ func (a *API) acceptRevision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Carry unresolved comments + replies forward to the new revision.
+	// Resolved comments are NOT copied: they're already "applied" — the
+	// AI baked them into the new content. Unresolved threads represent
+	// ongoing review and would silently disappear otherwise.
+	//
+	// Comments are re-anchored against the child's new (revised) content.
+	// Threads whose quoted text still appears stay as inline highlights;
+	// the rest become orphans in the new doc's orphan section, just like
+	// after a Sync. Doc-level pins (empty anchor) always carry.
+	carried := a.copyOpenCommentsToChild(r.Context(), parent.ID, doc)
+	if carried > 0 {
+		a.hub.Broadcast(doc.ID, "comments-updated")
+	}
+
 	writeJSON(w, http.StatusCreated, doc)
+}
+
+// copyOpenCommentsToChild duplicates every unresolved comment from
+// parentID onto childDoc, re-anchoring against the child's content.
+// Returns the count of comments inserted on the child. Errors per
+// comment are logged but don't abort the rest — losing a few re-anchored
+// copies is better than losing them all if Mongo blips midway.
+func (a *API) copyOpenCommentsToChild(ctx context.Context, parentID string, child *models.Document) int {
+	parents, err := a.store.ListComments(ctx, parentID)
+	if err != nil {
+		return 0
+	}
+	if len(parents) == 0 {
+		return 0
+	}
+	now := time.Now().UTC()
+	inserted := 0
+	for _, src := range parents {
+		if src.Resolved {
+			continue
+		}
+		copy := buildCarriedComment(src, child, now)
+		if err := a.store.InsertComment(ctx, &copy); err == nil {
+			inserted++
+		}
+	}
+	return inserted
+}
+
+// buildCarriedComment produces the child-doc copy of an unresolved
+// parent comment, with new ID, the same author/body/replies, and
+// a re-anchored anchor (clean / orphan / doc-level) against the child
+// content. Doc-level (empty anchor) carries verbatim. Inline anchors
+// are re-checked against render.PlainText(child.Content); a miss
+// flips to orphan with OriginalExact preserved.
+func buildCarriedComment(src models.Comment, child *models.Document, now time.Time) models.Comment {
+	out := models.Comment{
+		ID:              uuid.NewString(),
+		DocumentID:      child.ID,
+		Anchor:          src.Anchor,
+		Author:          src.Author,
+		AuthorID:        src.AuthorID,
+		AuthorAvatarURL: src.AuthorAvatarURL,
+		ActorKind:       src.ActorKind,
+		TokenID:         src.TokenID,
+		Body:            src.Body,
+		Resolved:        false,
+		CreatedAt:       src.CreatedAt,
+		UpdatedAt:       now,
+	}
+	// Replies carry verbatim, with new IDs to avoid colliding with the
+	// parent's reply documents.
+	for _, rep := range src.Replies {
+		out.Replies = append(out.Replies, models.Reply{
+			ID:              uuid.NewString(),
+			Author:          rep.Author,
+			AuthorID:        rep.AuthorID,
+			AuthorAvatarURL: rep.AuthorAvatarURL,
+			ActorKind:       rep.ActorKind,
+			TokenID:         rep.TokenID,
+			Body:            rep.Body,
+			CreatedAt:       rep.CreatedAt,
+			UpdatedAt:       rep.UpdatedAt,
+		})
+	}
+	if out.Replies == nil {
+		out.Replies = []models.Reply{}
+	}
+	// Doc-level pins always carry; nothing to re-anchor.
+	if isDocLevel(out.Anchor) {
+		return out
+	}
+	// Inline: reuse the existing single-comment reanchor decision.
+	res := reanchorComments([]models.Comment{out}, child.Content)[0]
+	switch res.Status {
+	case reanchorClean:
+		out.Anchor.Start = 0
+		out.Anchor.End = 0
+		out.Anchor.Exact = res.Exact
+	case reanchorOrphan:
+		out.Orphan = true
+		out.OriginalExact = res.OriginalExact
+	}
+	return out
 }
 
 func (a *API) revisionErrorPayload(rev *ai.RevisionError) fetchErrorResponse {

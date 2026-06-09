@@ -244,6 +244,18 @@ export default function HomePage() {
                   className="font-medium text-ink hover:text-accent flex items-center gap-2"
                 >
                   <span className="truncate">{d.title}</span>
+                  {d.revisionCount && d.revisionCount > 1 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-accent-soft text-accent shrink-0"
+                      title={`AI-revised · ${d.revisionCount} versions in this chain (the link opens the most recent)`}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                        <polyline points="21 3 21 9 15 9" />
+                      </svg>
+                      v{d.revisionCount}
+                    </span>
+                  )}
                   {d.private && (
                     <span
                       className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-soft text-muted shrink-0"

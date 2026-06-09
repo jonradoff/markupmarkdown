@@ -9,6 +9,7 @@ import type {
   DocumentSummary,
   MdDocument,
   MentionCandidate,
+  MergePreview,
   NotificationListResponse,
   PatchAnchorRequest,
   RevisionPreview,
@@ -97,6 +98,109 @@ export const api = {
    * possible, and flips the rest to orphan. */
   syncDocumentSource: (id: string) =>
     req<SyncSourceResponse>(`/api/documents/${id}/sync`, { method: "POST" }),
+  /** Commits a previously-streamed merge. The frontend roundtrips the
+   * merged content so we don't pay Claude twice. */
+  mergeAcceptSource: (
+    id: string,
+    payload: {
+      mergedContent: string;
+      upstreamContent: string;
+      upstreamSourceSha: string;
+      model?: string;
+      tokensIn?: number;
+      tokensOut?: number;
+    }
+  ) =>
+    req<SyncSourceResponse>(`/api/documents/${id}/merge-accept`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /** Streams a 3-way Claude merge of (ancestor, ours, theirs).
+   * onDelta sees the merged Markdown as it generates; the returned
+   * MergePreview can be roundtripped to mergeAcceptSource to commit. */
+  mergePreviewStream: async (
+    id: string,
+    onDelta: (text: string) => void,
+    signal?: AbortSignal
+  ): Promise<MergePreview> => {
+    const res = await fetch(`/api/documents/${id}/merge-preview`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      let msg = `${res.status} ${res.statusText}`;
+      let kind: string | undefined;
+      let actions: { label: string; url: string }[] | undefined;
+      try {
+        const body = await res.json();
+        if (body?.error) msg = body.error;
+        if (body?.kind) kind = body.kind;
+        if (Array.isArray(body?.actions)) actions = body.actions;
+      } catch {
+        /* fall through */
+      }
+      throw new APIError(msg, { kind, actions });
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done: MergePreview | null = null;
+    let streamErr: APIError | null = null;
+
+    function processBlock(block: string) {
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5));
+      }
+      if (dataLines.length === 0) return;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(dataLines.join("\n"));
+      } catch {
+        return;
+      }
+      if (event === "delta") {
+        const text = (payload as { text?: string }).text;
+        if (typeof text === "string") onDelta(text);
+      } else if (event === "done") {
+        done = payload as MergePreview;
+      } else if (event === "error") {
+        const p = payload as {
+          error?: string;
+          kind?: string;
+          actions?: { label: string; url: string }[];
+        };
+        streamErr = new APIError(p.error ?? "Merge failed", {
+          kind: p.kind,
+          actions: p.actions,
+        });
+      }
+    }
+
+    while (true) {
+      const { done: streamDone, value } = await reader.read();
+      if (streamDone) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        processBlock(block);
+      }
+    }
+    if (buffer.trim()) processBlock(buffer);
+    if (streamErr) throw streamErr;
+    if (!done) throw new APIError("Stream ended before the merge completed.");
+    return done;
+  },
   /** Forces an immediate upstream SHA check (bypasses the server-side
    * TTL) and re-verifies GitHub access. Returns the freshly-computed
    * drift state so the caller can update local doc state without
