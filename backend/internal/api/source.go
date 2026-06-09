@@ -602,12 +602,13 @@ func (a *API) mergePreviewSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reuse the AI-revision rate-limit + slot bucket — merge is the same
-	// shape (Opus call, streaming output) and we don't want the two
-	// budgets compounding.
-	if !a.rlRevise.Allow("u:" + user.ID) {
+	// Separate bucket from rlRevise so a session of AI revisions doesn't
+	// lock out merging in the same hour. Sized generously (240/hour,
+	// burst 5) — the real ceiling is the user's Anthropic billing, not
+	// our guard.
+	if !a.rlMerge.Allow("u:" + user.ID) {
 		_ = emit("error", fetchErrorResponse{
-			Error: "You've reached the AI-revision rate limit (30/hour). Try again later.",
+			Error: "You've reached the merge rate limit (240/hour). Try again in a minute.",
 			Kind:  "rate_limited",
 		})
 		return

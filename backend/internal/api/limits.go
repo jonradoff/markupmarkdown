@@ -38,8 +38,15 @@ func (a *API) initLimits() {
 	a.rlOAuthStart = limits.NewBucket(5.0/60.0, 2)
 	// Comments: 60/min per identity = 1.0/sec.
 	a.rlComment = limits.NewBucket(1.0, 10)
-	// AI revision per user: 30/hour per user, no burst.
-	a.rlRevise = limits.NewBucket(30.0/3600.0, 1)
+	// AI revision per user: 240/hour, burst 5. Sized so an operator
+	// or a focused review session never hits it. The real ceiling is
+	// the user's own Anthropic account billing — we're just a
+	// belt-and-suspenders guard against runaway loops.
+	a.rlRevise = limits.NewBucket(240.0/3600.0, 5)
+	// Source-merge per user: separate from rlRevise so a session of
+	// AI revisions doesn't lock out merging in the same hour. Same
+	// generous shape.
+	a.rlMerge = limits.NewBucket(240.0/3600.0, 5)
 	// Anthropic-key updates: 5/hour per user.
 	a.rlAPIKeyPut = limits.NewBucket(5.0/3600.0, 1)
 	// Token edits (rename / scope change): 30/hour per user, burst 10.

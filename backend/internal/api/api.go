@@ -24,6 +24,7 @@ type API struct {
 	rlOAuthStart *limits.Bucket
 	rlComment    *limits.Bucket
 	rlRevise     *limits.Bucket
+	rlMerge      *limits.Bucket
 	rlAPIKeyPut  *limits.Bucket
 	rlTokenEdit  *limits.Bucket
 	sseCounter   *limits.Counter
