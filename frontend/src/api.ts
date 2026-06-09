@@ -406,6 +406,24 @@ export const api = {
    * defaults. */
   pushbackInfo: (documentId: string) =>
     req<PushbackInfo>(`/api/documents/${documentId}/pushback/info`),
+  /** Soft-lock the doc for editing. 409 if someone else already holds it. */
+  claimEditLock: (documentId: string) =>
+    req<{ holder: string; holderId: string; expires: string }>(
+      `/api/documents/${documentId}/edit-lock`,
+      { method: "POST" }
+    ),
+  releaseEditLock: (documentId: string) =>
+    req<void>(`/api/documents/${documentId}/edit-lock`, {
+      method: "DELETE",
+    }),
+  getEditLock: (documentId: string) =>
+    req<{
+      locked: boolean;
+      mine?: boolean;
+      holder?: string;
+      holderId?: string;
+      expires?: string;
+    }>(`/api/documents/${documentId}/edit-lock`),
   /** Commit the doc back to its source repo. Mode picks PR vs direct. */
   pushback: (
     documentId: string,

@@ -110,6 +110,15 @@ export default function DocumentPage() {
   const [editing, setEditing] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [showPushback, setShowPushback] = useState(false);
+  // editLock holds the current soft-lock state for the doc. When set
+  // and !mine, the toolbar's Edit button is hidden and a banner says
+  // who's editing. Updated by the SSE "edit-lock-changed" event so
+  // every open tab agrees within a round-trip.
+  const [editLock, setEditLock] = useState<{
+    locked: boolean;
+    mine?: boolean;
+    holder?: string;
+  }>({ locked: false });
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -499,13 +508,25 @@ export default function DocumentPage() {
       scheduleRefresh();
     };
     const onHello = () => scheduleRefresh(); // belt-and-suspenders
+    // Refresh the edit-lock state when someone claims or releases
+    // the lock on this doc. Cheap GET; no need for a separate stream.
+    const onEditLockChanged = async () => {
+      try {
+        const lk = await api.getEditLock(id);
+        setEditLock(lk);
+      } catch {
+        /* network blip — next event reconciles */
+      }
+    };
     es.addEventListener("comments-updated", onUpdate);
     es.addEventListener("doc-updated", onDocUpdate);
+    es.addEventListener("edit-lock-changed", onEditLockChanged);
     es.addEventListener("hello", onHello);
     es.onopen = onOpen;
     return () => {
       es.removeEventListener("comments-updated", onUpdate);
       es.removeEventListener("doc-updated", onDocUpdate);
+      es.removeEventListener("edit-lock-changed", onEditLockChanged);
       es.removeEventListener("hello", onHello);
       es.close();
       if (refreshTimerRef.current != null) {
@@ -574,6 +595,58 @@ export default function DocumentPage() {
       // Re-throw so NewCommentComposer's `busy` state clears via its
       // try/catch and the user can edit + retry.
       throw err;
+    }
+  }
+
+  // Initial edit-lock fetch — gets the state on mount so other-user
+  // editing is visible immediately, before any SSE event fires.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const lk = await api.getEditLock(id);
+        if (!cancelled) setEditLock(lk);
+      } catch {
+        /* no GitHub-flavoured access, or 401 — leave default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // While in edit mode: refresh the lock every 3.5 min so the
+  // server-side 5-min TTL doesn't expire mid-edit. Release on unmount
+  // or when leaving edit mode.
+  useEffect(() => {
+    if (!id || !editing) return;
+    const heartbeat = window.setInterval(() => {
+      api.claimEditLock(id).catch(() => {
+        /* another viewer took over — toast on next SSE round */
+      });
+    }, 3.5 * 60 * 1000);
+    return () => {
+      window.clearInterval(heartbeat);
+      // Best-effort release. If it fails the 5-min TTL takes over.
+      api.releaseEditLock(id).catch(() => {});
+    };
+  }, [id, editing]);
+
+  // Try to claim the lock when the user clicks Edit. If someone else
+  // holds it (409), surface a toast with their name and stay in read
+  // mode. Otherwise enter the editor.
+  async function startEditing() {
+    if (!id) return;
+    try {
+      await api.claimEditLock(id);
+      setEditing(true);
+    } catch (err) {
+      if (err instanceof APIError && err.kind === "edit_lock_held") {
+        toast.error(err.message);
+        return;
+      }
+      toastError(err, "Couldn't start editing.");
     }
   }
 
@@ -1005,7 +1078,8 @@ export default function DocumentPage() {
             signedIn={!!user}
             onRename={renameDoc}
             onRevise={handleReviseClick}
-            onEdit={() => withIdentity(() => setEditing(true))}
+            onEdit={() => withIdentity(startEditing)}
+            editLockedBy={editLock.locked && !editLock.mine ? editLock.holder : undefined}
             onPushback={() => withIdentity(() => setShowPushback(true))}
             onShare={() => setShowShare(true)}
             onDownload={handleDownload}
