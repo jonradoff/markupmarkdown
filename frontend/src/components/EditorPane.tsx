@@ -8,6 +8,7 @@ import CodeMirror, {
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
+import { oneDark } from "@codemirror/theme-one-dark";
 import MarkdownRender from "./MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
 import {
@@ -51,6 +52,25 @@ export default function EditorPane({
   // surface; users can toggle preview on per-session if they want.
   const [showPreview, setShowPreview] = useState(false);
   const cmRef = useRef<ReactCodeMirrorRef>(null);
+
+  // Track the live dark/light theme so CodeMirror's syntax-highlight
+  // palette flips with the rest of the app. The app marks dark mode
+  // by toggling a `dark` class on <html>; observe that and re-render
+  // when it changes (theme switcher in the header, or system
+  // preference change while the editor is open).
+  const [isDark, setIsDark] = useState(() =>
+    document.documentElement.classList.contains("dark")
+  );
+  useEffect(() => {
+    const update = () =>
+      setIsDark(document.documentElement.classList.contains("dark"));
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   const dirty = content !== initialContent;
 
@@ -239,7 +259,7 @@ export default function EditorPane({
               rectangularSelection: false,
               crosshairCursor: false,
             }}
-            theme="light"
+            theme={isDark ? oneDark : "light"}
             placeholder="Edit Markdown…"
             height="60vh"
             style={{ fontSize: 14 }}
