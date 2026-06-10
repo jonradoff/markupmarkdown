@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import MarkdownRender from "./MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
+import {
+  applyCodeBlock,
+  applyHeading,
+  applyHR,
+  applyLink,
+  applyLinePrefix,
+  applyWrap,
+  type EditState,
+} from "../utils/markdownActions";
 
 interface Props {
   initialContent: string;
@@ -70,15 +79,62 @@ export default function EditorPane({
 
   const dirty = content !== initialContent;
 
-  // Cmd/Ctrl-S to save while in the textarea — feels native for anyone
-  // who's edited Markdown elsewhere.
+  // applyAction takes a markdownActions helper, runs it against the
+  // textarea's current state, and writes the result back. Centralizes
+  // the focus/selection/scroll dance every toolbar button + shortcut
+  // needs to perform.
+  function applyAction(fn: (s: EditState) => EditState) {
+    const ta = taRef.current;
+    if (!ta) return;
+    const next = fn({
+      text: ta.value,
+      selectionStart: ta.selectionStart,
+      selectionEnd: ta.selectionEnd,
+    });
+    setContent(next.text);
+    // Restore selection after React reconciles. requestAnimationFrame
+    // is just-enough delay; setTimeout(0) also works but rAF aligns
+    // with the paint cycle.
+    requestAnimationFrame(() => {
+      if (!taRef.current) return;
+      taRef.current.focus();
+      taRef.current.setSelectionRange(next.selectionStart, next.selectionEnd);
+    });
+  }
+
+  // Cmd/Ctrl-S to save, Esc to cancel — plus the standard set of
+  // editor shortcuts so muscle memory transfers from other Markdown
+  // tools (Bear, iA Writer, Obsidian).
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+    const cmd = e.metaKey || e.ctrlKey;
+    if (cmd && e.key === "s") {
       e.preventDefault();
       if (dirty && !saving) onSave(content);
-    } else if (e.key === "Escape") {
+      return;
+    }
+    if (e.key === "Escape") {
       e.preventDefault();
       if (!saving) onCancel();
+      return;
+    }
+    if (!cmd) return;
+    switch (e.key.toLowerCase()) {
+      case "b":
+        e.preventDefault();
+        applyAction((s) => applyWrap(s, "**"));
+        return;
+      case "i":
+        e.preventDefault();
+        applyAction((s) => applyWrap(s, "_"));
+        return;
+      case "k":
+        e.preventDefault();
+        applyAction(applyLink);
+        return;
+      case "e":
+        e.preventDefault();
+        applyAction((s) => applyWrap(s, "`"));
+        return;
     }
   }
 
@@ -116,6 +172,29 @@ export default function EditorPane({
         </button>
       </div>
 
+      {/* Formatting toolbar — operates on the textarea's current
+          selection. Cmd/Ctrl shortcuts mirror the buttons (B/I/K/E)
+          for muscle memory. */}
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted border border-rule rounded-md px-2 py-1.5 bg-card">
+        <ToolbarButton title="Bold (⌘B)" onClick={() => applyAction((s) => applyWrap(s, "**"))}><b>B</b></ToolbarButton>
+        <ToolbarButton title="Italic (⌘I)" onClick={() => applyAction((s) => applyWrap(s, "_"))}><i>I</i></ToolbarButton>
+        <ToolbarButton title="Strikethrough" onClick={() => applyAction((s) => applyWrap(s, "~~"))}><span style={{ textDecoration: "line-through" }}>S</span></ToolbarButton>
+        <ToolbarButton title="Inline code (⌘E)" onClick={() => applyAction((s) => applyWrap(s, "`"))}><code className="text-[11px]">{`<>`}</code></ToolbarButton>
+        <span className="w-px h-4 bg-rule mx-1" />
+        <ToolbarButton title="Heading 1" onClick={() => applyAction((s) => applyHeading(s, 1))}>H1</ToolbarButton>
+        <ToolbarButton title="Heading 2" onClick={() => applyAction((s) => applyHeading(s, 2))}>H2</ToolbarButton>
+        <ToolbarButton title="Heading 3" onClick={() => applyAction((s) => applyHeading(s, 3))}>H3</ToolbarButton>
+        <span className="w-px h-4 bg-rule mx-1" />
+        <ToolbarButton title="Bulleted list" onClick={() => applyAction((s) => applyLinePrefix(s, "- "))}>• List</ToolbarButton>
+        <ToolbarButton title="Numbered list" onClick={() => applyAction((s) => applyLinePrefix(s, "1. "))}>1. List</ToolbarButton>
+        <ToolbarButton title="Task list" onClick={() => applyAction((s) => applyLinePrefix(s, "- [ ] "))}>☐ Task</ToolbarButton>
+        <ToolbarButton title="Quote" onClick={() => applyAction((s) => applyLinePrefix(s, "> "))}>“ Quote</ToolbarButton>
+        <span className="w-px h-4 bg-rule mx-1" />
+        <ToolbarButton title="Link (⌘K)" onClick={() => applyAction(applyLink)}>Link</ToolbarButton>
+        <ToolbarButton title="Code block" onClick={() => applyAction(applyCodeBlock)}>{`{ }`}</ToolbarButton>
+        <ToolbarButton title="Horizontal rule" onClick={() => applyAction(applyHR)}>—</ToolbarButton>
+      </div>
+
       <div className={`grid gap-3 ${showPreview ? "md:grid-cols-2" : "grid-cols-1"}`}>
         <textarea
           ref={taRef}
@@ -135,6 +214,31 @@ export default function EditorPane({
         )}
       </div>
     </div>
+  );
+}
+
+// ToolbarButton is the tiny styled wrapper used by every formatting
+// button in the editor toolbar. Pulled out so the JSX above stays
+// readable and the styling stays consistent.
+function ToolbarButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onMouseDown={(e) => e.preventDefault() /* keep textarea focus */}
+      onClick={onClick}
+      className="px-2 py-1 rounded hover:bg-soft text-muted hover:text-ink min-w-[1.75rem] flex items-center justify-center"
+    >
+      {children}
+    </button>
   );
 }
 
