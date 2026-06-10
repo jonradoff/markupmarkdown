@@ -1119,6 +1119,11 @@ export default function DocumentPage() {
               saving={editSaving}
               onSave={handleManualSave}
               onCancel={() => setEditing(false)}
+              activeAnchorExact={
+                activeId
+                  ? comments.find((c) => c.id === activeId)?.anchor.exact
+                  : undefined
+              }
             />
           ) : (
             <MarkdownRender
