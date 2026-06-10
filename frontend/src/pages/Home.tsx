@@ -225,7 +225,9 @@ export default function HomePage() {
             className="px-4 py-2 rounded bg-accent text-accent-fg font-medium hover:opacity-90 disabled:opacity-50"
           >
             {busy
-              ? "Loading…"
+              ? isGitHubIndexTarget(url.trim())
+                ? "Looking up GitHub…"
+                : "Loading…"
               : isGitHubIndexTarget(url.trim())
                 ? "Index"
                 : "Open"}

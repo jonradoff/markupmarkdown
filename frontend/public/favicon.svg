@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Markdown">
+  <title>Markdown</title>
+  <!-- The canonical Markdown mark by Dustin Curtis (CC0) — the
+       rounded "M↓" rectangle is the universal "this is markdown"
+       signal used by GitHub, VS Code, CommonMark, and every render
+       badge on npm. We center it in a 256×256 square so the favicon
+       reads cleanly at 16×16 / 32×32 sizes without distortion. -->
+  <defs>
+    <style>
+      .bg  { fill: #ffffff; }
+      .ink { fill: #0f172a; stroke: #0f172a; }
+      @media (prefers-color-scheme: dark) {
+        .bg  { fill: #0b1220; }
+        .ink { fill: #e5e7eb; stroke: #e5e7eb; }
+      }
+    </style>
+  </defs>
+  <rect class="bg" width="256" height="256" rx="40" />
+  <!-- Markdown rectangle (208×128) translated to center within 256×256.
+       (256-208)/2 = 24,  (256-128)/2 = 64 -->
+  <g transform="translate(24,64)">
+    <rect class="ink" x="5" y="5" width="198" height="118" rx="14" fill="none" stroke-width="12" />
+    <path class="ink" stroke="none" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0l-30-33h20V30h20v35h20z" />
+  </g>
+</svg>

@@ -38,6 +38,7 @@ export default function IndexPage() {
     scanning: boolean;
   }>({ status: "Connecting…", current: 0, total: 0, scanning: true });
   const [streamErr, setStreamErr] = useState<string | null>(null);
+  const [recentRepos, setRecentRepos] = useState<string[]>([]);
   const truncatedRef = useRef(false);
 
   // Saved filename filters (tabs). Empty string = "All". Tabs are
@@ -168,6 +169,14 @@ export default function IndexPage() {
           if (ev.items && ev.items.length > 0) {
             setItems((cur) => mergeAndSort([...cur, ...(ev.items || [])]));
           }
+          if (ev.repo) {
+            // Keep the last 8 repo names so the user sees a small
+            // scrolling activity log instead of a single line that
+            // updates too fast to read on a 150-repo org.
+            setRecentRepos((cur) =>
+              [`${ev.repo}${ev.items ? ` · ${ev.items.length} md` : ""}`, ...cur].slice(0, 8),
+            );
+          }
           setProgress({
             status: ev.message || `Scanning ${ev.current}/${ev.total}…`,
             current: ev.current ?? 0,
@@ -297,8 +306,31 @@ export default function IndexPage() {
       </div>
     );
   }
+  // While the meta event hasn't arrived yet, render the progress
+  // banner anyway so the user sees what's happening from the first
+  // frame instead of staring at "Loading…". Once meta lands the rest
+  // of the page mounts in place.
   if (!index) {
-    return <div className="max-w-4xl mx-auto px-6 py-10 text-muted">Loading…</div>;
+    return (
+      <div className="max-w-4xl mx-auto px-6 py-10">
+        <div className="text-xs text-muted mb-2">
+          <Link to="/" className="hover:text-accent">
+            ← All docs
+          </Link>
+        </div>
+        <ProgressBanner
+          progress={progress}
+          streamErr={streamErr}
+          totalShown={items.length}
+          percent={
+            progress.total > 0
+              ? Math.round((progress.current / progress.total) * 100)
+              : 0
+          }
+          recentRepos={recentRepos}
+        />
+      </div>
+    );
   }
 
   const isOwner = !!user && user.id === index.owner;
@@ -525,44 +557,14 @@ export default function IndexPage() {
         )}
       </div>
 
-      {/* Live progress banner — replaces the dead-air "Loading…" the
-          user used to stare at while a 150-repo org spider ran. */}
-      {(progress.scanning || streamErr) && (
-        <div className="mb-4 rounded-lg border border-rule bg-card p-3">
-          <div className="flex items-center gap-2 text-sm">
-            {progress.scanning && (
-              <span
-                aria-hidden
-                className="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin"
-              />
-            )}
-            <span className="text-ink font-medium">
-              {streamErr ? "Scan failed" : progress.status}
-            </span>
-            {progress.total > 0 && (
-              <span className="text-muted tabular-nums text-xs">
-                {progress.current} / {progress.total}
-              </span>
-            )}
-            {totalShown > 0 && (
-              <span className="text-faint text-xs">
-                · {totalShown} markdown file{totalShown === 1 ? "" : "s"} so far
-              </span>
-            )}
-          </div>
-          {progress.total > 0 && (
-            <div className="mt-2 h-1.5 bg-soft rounded-full overflow-hidden">
-              <div
-                className="h-full bg-accent transition-[width] duration-200"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-          )}
-          {streamErr && (
-            <div className="mt-2 text-xs text-danger">{streamErr}</div>
-          )}
-        </div>
-      )}
+      <ProgressBanner
+        progress={progress}
+        streamErr={streamErr}
+        totalShown={totalShown}
+        percent={percent}
+        recentRepos={recentRepos}
+      />
+
 
       {totalShown === 0 ? (
         !progress.scanning ? (
@@ -620,6 +622,76 @@ export default function IndexPage() {
       {/* Hidden ownership marker — silences the unused-var lint for
           isOwner without breaking the visible UI. */}
       {isOwner && <span className="sr-only">owner view</span>}
+    </div>
+  );
+}
+
+// ProgressBanner is the "we're scanning, here's what's happening"
+// strip rendered above the listing. Visible from the moment the
+// component mounts (before the index meta even arrives) so the user
+// gets immediate feedback that something IS happening. The recent
+// repo log shows the most recent 8 repos as they come in — a 150-repo
+// org now reads like a live build log instead of a frozen spinner.
+function ProgressBanner({
+  progress,
+  streamErr,
+  totalShown,
+  percent,
+  recentRepos,
+}: {
+  progress: { status: string; current: number; total: number; scanning: boolean };
+  streamErr: string | null;
+  totalShown: number;
+  percent: number;
+  recentRepos: string[];
+}) {
+  if (!progress.scanning && !streamErr) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-rule bg-card p-3">
+      <div className="flex items-center gap-2 text-sm flex-wrap">
+        {progress.scanning && (
+          <span
+            aria-hidden
+            className="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0"
+          />
+        )}
+        <span className="text-ink font-medium">
+          {streamErr ? "Scan failed" : progress.status}
+        </span>
+        {progress.total > 0 && (
+          <span className="text-muted tabular-nums text-xs">
+            {progress.current} / {progress.total} repos
+          </span>
+        )}
+        {totalShown > 0 && (
+          <span className="text-faint text-xs">
+            · {totalShown} markdown file{totalShown === 1 ? "" : "s"} so far
+          </span>
+        )}
+      </div>
+      {progress.total > 0 && (
+        <div className="mt-2 h-1.5 bg-soft rounded-full overflow-hidden">
+          <div
+            className="h-full bg-accent transition-[width] duration-200"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+      {/* Live activity log — newest at top so the most-recent repo
+          stays in the same place (much easier to read than a feed
+          that scrolls past too quickly). */}
+      {recentRepos.length > 0 && (
+        <ul className="mt-2 text-[11px] text-muted font-mono leading-snug max-h-32 overflow-hidden">
+          {recentRepos.map((r, i) => (
+            <li key={`${r}-${i}`} className="truncate" style={{ opacity: 1 - i * 0.1 }}>
+              <span className="text-faint">›</span> {r}
+            </li>
+          ))}
+        </ul>
+      )}
+      {streamErr && (
+        <div className="mt-2 text-xs text-danger">{streamErr}</div>
+      )}
     </div>
   );
 }
