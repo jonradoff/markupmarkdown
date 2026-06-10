@@ -35,8 +35,15 @@ export default function SourceDriftBanner({
     : null;
 
   return (
-    <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-3 flex items-start gap-3">
-      <div className="shrink-0 text-amber-700 dark:text-amber-300 mt-0.5">
+    <div
+      className="mb-6 rounded-lg border p-3 flex items-start gap-3"
+      style={{
+        backgroundColor: "var(--color-warn-bg)",
+        borderColor: "var(--color-warn-border)",
+        color: "var(--color-warn-ink)",
+      }}
+    >
+      <div className="shrink-0 mt-0.5" style={{ color: "var(--color-warn-muted)" }}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
           <line x1="12" y1="9" x2="12" y2="13" />
@@ -44,10 +51,10 @@ export default function SourceDriftBanner({
         </svg>
       </div>
       <div className="flex-1 min-w-0 text-sm">
-        <div className="font-medium text-amber-900 dark:text-amber-100">
+        <div className="font-medium">
           Source updated on GitHub{when ? ` · noticed ${when}` : ""}
         </div>
-        <div className="text-amber-800 dark:text-amber-200/80 mt-0.5">
+        <div className="mt-0.5" style={{ color: "var(--color-warn-muted)" }}>
           {isRevision ? (
             <>
               This document is an AI revision; the original source on GitHub
@@ -70,7 +77,19 @@ export default function SourceDriftBanner({
           {canSync && (
             <button
               onClick={onMerge}
-              className="text-xs px-3 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700"
+              className="text-xs px-3 py-1 rounded font-medium transition-colors"
+              style={{
+                backgroundColor: "var(--color-warn-action)",
+                color: "var(--color-warn-action-fg)",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.backgroundColor =
+                  "var(--color-warn-action-hover)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.backgroundColor =
+                  "var(--color-warn-action)")
+              }
             >
               Merge changes from GitHub
             </button>
@@ -79,7 +98,7 @@ export default function SourceDriftBanner({
             href={githubURL}
             target="_blank"
             rel="noreferrer"
-            className="text-xs text-amber-900 dark:text-amber-100 underline hover:no-underline"
+            className="text-xs underline hover:no-underline"
           >
             View latest on GitHub
           </a>

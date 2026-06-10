@@ -20,7 +20,7 @@ import { FilterButton, Count } from "../components/CommentFilterButtons";
 import CommentStepNav from "../components/CommentStepNav";
 import SourceDriftBanner from "../components/SourceDriftBanner";
 import MergeModal from "../components/MergeModal";
-import EditorPane from "../components/EditorPane";
+import EditorPane, { type EditorPaneHandle } from "../components/EditorPane";
 import PushbackModal from "../components/PushbackModal";
 import OrphanCommentCard from "../components/OrphanCommentCard";
 import { getAuthor } from "../utils/author";
@@ -122,6 +122,9 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  // Imperative handle to the CodeMirror editor when editing. Lets the
+  // anchored card layout pull editor-relative anchor coordinates.
+  const editorRef = useRef<EditorPaneHandle>(null);
   const topHeaderRef = useRef<HTMLDivElement>(null);
   const navBarRef = useRef<HTMLDivElement>(null);
   // Refs to each rendered CommentCard wrapper, so we can measure their
@@ -243,24 +246,36 @@ export default function DocumentPage() {
   // each other down with a constant gap. The cards live in a
   // position: relative container; we set style.top per card.
   useLayoutEffect(() => {
-    const content = contentRef.current;
     const sidebar = sidebarRef.current;
-    if (!content || !sidebar) return;
-    // sidebar.scrollTop accounts for the user's scroll within the
-    // sidebar; content.getBoundingClientRect().top minus
-    // sidebar.getBoundingClientRect().top normalizes to sidebar-local
-    // coordinates.
+    if (!sidebar) return;
+    const content = contentRef.current;
+    // In edit mode the rendered Markdown is gone — pull anchor
+    // positions from CodeMirror via the imperative ref so cards still
+    // line up with the source span of each comment. Outside edit mode
+    // fall back to the rendered-DOM highlight rect.
+    const usingEditor = editing && editorRef.current;
+    if (!usingEditor && !content) return;
     const sbBox = sidebar.getBoundingClientRect();
     const items = visibleComments
       .map((c) => {
-        const rect = getHighlightRect(content, c.id);
-        if (!rect) return null;
+        let top: number | null = null;
+        if (usingEditor) {
+          const exact = c.anchor.exact || c.originalExact || "";
+          if (!exact) return null;
+          const r = editorRef.current!.coordsForAnchor(exact);
+          if (!r) return null;
+          top = r.top;
+        } else if (content) {
+          const rect = getHighlightRect(content, c.id);
+          if (!rect) return null;
+          top = rect.top;
+        }
+        if (top == null) return null;
         const wrapper = cardRefs.current[c.id];
         const height = wrapper?.offsetHeight ?? 120;
-        // Target the top of the highlight, in sidebar-local coords.
         return {
           id: c.id,
-          desiredTop: rect.top - sbBox.top + sidebar.scrollTop,
+          desiredTop: top - sbBox.top + sidebar.scrollTop,
           height,
         };
       })
@@ -280,7 +295,7 @@ export default function DocumentPage() {
       it.desiredTop < minTop ? { ...it, desiredTop: minTop } : it
     );
     setCardTops(relaxAnchors(padded, 12));
-  }, [doc, comments, activeId, filter, layoutTick, topHeaderH, navBarH]);
+  }, [doc, comments, activeId, filter, layoutTick, topHeaderH, navBarH, editing]);
 
   // Trigger a re-measure when the window resizes (column widths change
   // → highlight Y positions change). Bumping layoutTick is the explicit
@@ -1145,6 +1160,7 @@ export default function DocumentPage() {
               live preview. Comments + drift banner stay visible above. */}
           {editing ? (
             <EditorPane
+              ref={editorRef}
               initialContent={doc.content}
               sourceUrl={doc.sourceUrl}
               saving={editSaving}
@@ -1155,6 +1171,7 @@ export default function DocumentPage() {
                   ? comments.find((c) => c.id === activeId)?.anchor.exact
                   : undefined
               }
+              onLayoutTick={() => setLayoutTick((n) => n + 1)}
             />
           ) : (
             <MarkdownRender
@@ -1168,7 +1185,13 @@ export default function DocumentPage() {
             <div className="mt-10 pt-6 border-t border-rule">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted mb-3">
                 Comments without anchors{" "}
-                <span className="ml-1 inline-flex items-center justify-center min-w-[1.5em] px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-900 text-[10px] font-bold">
+                <span
+                  className="ml-1 inline-flex items-center justify-center min-w-[1.5em] px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                  style={{
+                    backgroundColor: "var(--color-warn-border)",
+                    color: "var(--color-warn-ink)",
+                  }}
+                >
                   {orphanComments.length}
                 </span>
               </h2>

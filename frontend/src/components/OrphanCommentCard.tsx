@@ -29,23 +29,55 @@ export default function OrphanCommentCard(props: Props) {
   const original = comment.originalExact || comment.anchor.exact || "";
 
   return (
-    <div className="border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 rounded-lg p-3">
-      <div className="text-[11px] uppercase tracking-wide font-medium text-amber-800 dark:text-amber-300 mb-1.5">
+    <div
+      className="rounded-lg p-3 border"
+      style={{
+        borderColor: "var(--color-warn-border)",
+        backgroundColor: "var(--color-warn-bg-soft)",
+        color: "var(--color-warn-ink)",
+      }}
+    >
+      <div
+        className="text-[11px] uppercase tracking-wide font-medium mb-1.5"
+        style={{ color: "var(--color-warn-muted)" }}
+      >
         Couldn't re-anchor this comment
       </div>
-      <div className="text-xs text-muted italic mb-2 border-l-2 border-amber-300 pl-2">
+      <div
+        className="text-xs italic mb-2 border-l-2 pl-2"
+        style={{
+          color: "var(--color-warn-muted)",
+          borderColor: "var(--color-warn-border)",
+        }}
+      >
         Previously highlighted: “{original}”
       </div>
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
         <button
           onClick={onStartReanchor}
-          className="px-2 py-1 rounded bg-amber-600 text-white font-medium hover:bg-amber-700"
+          className="px-2 py-1 rounded font-medium"
+          style={{
+            backgroundColor: "var(--color-warn-action)",
+            color: "var(--color-warn-action-fg)",
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.backgroundColor =
+              "var(--color-warn-action-hover)")
+          }
+          onMouseLeave={(e) =>
+            (e.currentTarget.style.backgroundColor =
+              "var(--color-warn-action)")
+          }
         >
           Re-anchor to new text
         </button>
         <button
           onClick={() => onMakeDocLevel()}
-          className="px-2 py-1 rounded border border-amber-400 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/30"
+          className="px-2 py-1 rounded border"
+          style={{
+            borderColor: "var(--color-warn-border)",
+            color: "var(--color-warn-ink)",
+          }}
         >
           Pin as doc-level
         </button>

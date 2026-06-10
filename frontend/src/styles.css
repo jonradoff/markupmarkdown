@@ -18,6 +18,18 @@
   --color-highlight-border: #f59e0b;
   --color-success: #10b981;
   --color-danger: #ef4444;
+  /* Warn palette — used by the source-drift banner, orphan-comment
+     section, and similar "needs attention" surfaces. Defined here so
+     the colors survive Tailwind v4's @theme replacement of the
+     default amber scale. */
+  --color-warn-bg: #fef3c7;
+  --color-warn-bg-soft: rgba(254, 243, 199, 0.6);
+  --color-warn-border: #fcd34d;
+  --color-warn-ink: #78350f;
+  --color-warn-muted: #92400e;
+  --color-warn-action: #b45309;
+  --color-warn-action-fg: #ffffff;
+  --color-warn-action-hover: #92400e;
   --color-code-bg: #0f172a;
   --color-code-fg: #e2e8f0;
 }
@@ -39,6 +51,14 @@
   --color-highlight-border: #f59e0b;
   --color-success: #34d399;
   --color-danger: #f87171;
+  --color-warn-bg: rgba(120, 53, 15, 0.22);
+  --color-warn-bg-soft: rgba(120, 53, 15, 0.12);
+  --color-warn-border: rgba(252, 211, 77, 0.45);
+  --color-warn-ink: #fde68a;
+  --color-warn-muted: #fcd34d;
+  --color-warn-action: #d97706;
+  --color-warn-action-fg: #1f2328;
+  --color-warn-action-hover: #b45309;
   --color-code-bg: #020617;
   --color-code-fg: #e2e8f0;
   color-scheme: dark;

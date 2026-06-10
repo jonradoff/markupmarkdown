@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import CodeMirror, {
   type ReactCodeMirrorRef,
   EditorView,
@@ -21,6 +29,19 @@ import {
   type EditState,
 } from "../utils/markdownActions";
 
+// EditorPaneHandle is the imperative surface Document.tsx pokes when
+// the anchored comment-card layout needs editor-relative positions —
+// in edit mode the rendered Markdown is gone, so getHighlightRect
+// from utils/anchor returns nothing. The handle lets the parent ask
+// CodeMirror where each comment's quoted text lives instead.
+export interface EditorPaneHandle {
+  /** Locate `exact` in the editor's current content and return its
+   * viewport-relative top/bottom in pixels, or null when no match. */
+  coordsForAnchor(exact: string): { top: number; bottom: number } | null;
+  /** Scroll the editor so `exact` is visible. */
+  scrollAnchorIntoView(exact: string): void;
+}
+
 interface Props {
   initialContent: string;
   sourceUrl?: string;
@@ -31,22 +52,31 @@ interface Props {
    * find its quoted text in the raw Markdown and select it so the
    * user can see which span the comment is anchored to. */
   activeAnchorExact?: string;
+  /** Fires when the editor scrolls or its size changes — the parent
+   * uses this as a layout-tick so the anchored comment cards reflow
+   * to match the new editor positions. */
+  onLayoutTick?: () => void;
 }
 
 // EditorPane wraps CodeMirror 6 with the GFM markdown language
 // extension — same syntax highlighting users see in VS Code, Obsidian,
 // HackMD, and GitHub's web editor. Toolbar buttons + ⌘B/I/K/E/F/S
-// stay wired through the same markdownActions helpers; the textarea
-// is gone but the keyboard shortcuts and selection-anchored comment
-// highlighting still work identically.
-export default function EditorPane({
+// stay wired through the same markdownActions helpers.
+//
+// forwardRef so Document.tsx can pull editor-relative anchor
+// coordinates for the anchored comment-card layout: in edit mode the
+// rendered Markdown is gone, so the parent's getHighlightRect-based
+// layout has nothing to anchor cards against. The ref handle lets it
+// ask CodeMirror where each anchor lives instead.
+const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
   initialContent,
   sourceUrl,
   saving,
   onSave,
   onCancel,
   activeAnchorExact,
-}: Props) {
+  onLayoutTick,
+}, ref) {
   const [content, setContent] = useState(initialContent);
   // Preview is off by default — markdown-only is the canonical edit
   // surface; users can toggle preview on per-session if they want.
@@ -108,6 +138,12 @@ export default function EditorPane({
     view.focus();
   }, []);
 
+  // Stable ref to the layout-tick so the extension array doesn't
+  // rebuild on every parent re-render (which would re-instantiate
+  // CodeMirror).
+  const layoutTickRef = useRef(onLayoutTick);
+  layoutTickRef.current = onLayoutTick;
+
   // CodeMirror extensions — built once, only rebuilt if the toggleable
   // pieces (none right now) change. Includes the markdown language,
   // search panel (default UI; opens on ⌘F), and our custom keymap.
@@ -116,6 +152,13 @@ export default function EditorPane({
       markdown({ base: markdownLanguage, codeLanguages: [] }),
       search({ top: true }),
       EditorView.lineWrapping,
+      // Notify the parent on scroll / geometry change so the
+      // anchored comment-card layout in the sidebar reflows.
+      EditorView.updateListener.of((u) => {
+        if (u.geometryChanged || u.viewportChanged) {
+          layoutTickRef.current?.();
+        }
+      }),
       // Prec.highest so our save/format shortcuts shadow CodeMirror's
       // defaults that share the same chord (e.g. ⌘B is bold here,
       // not "select-by-character" extend).
@@ -173,6 +216,48 @@ export default function EditorPane({
     view.focus();
     openSearchPanel(view);
   }
+
+  // Expose CodeMirror-relative anchor coordinates so the doc page's
+  // anchored card layout still works in edit mode. coordsAtPos returns
+  // null for off-screen positions; lineBlockAt + contentDOM offset is
+  // the fallback so cards still get a sensible Y even when the
+  // corresponding line isn't currently in the viewport.
+  useImperativeHandle(ref, () => ({
+    coordsForAnchor(exact) {
+      const view = cmRef.current?.view;
+      if (!view || !exact) return null;
+      const text = view.state.doc.toString();
+      const idx = findApproxIndex(text, exact);
+      if (idx < 0) return null;
+      const end = idx + matchLength(text, idx, exact);
+      const start = view.coordsAtPos(idx);
+      const fin = view.coordsAtPos(end);
+      if (start && fin) {
+        return { top: start.top, bottom: fin.bottom };
+      }
+      // Off-screen — derive from the document layout instead.
+      try {
+        const block = view.lineBlockAt(idx);
+        const contentTop = view.contentDOM.getBoundingClientRect().top;
+        // block.top is editor-document-relative; subtract scrollTop to
+        // get viewport-relative.
+        const scrollTop = view.scrollDOM.scrollTop;
+        const viewportTop = contentTop + (block.top - scrollTop);
+        return { top: viewportTop, bottom: viewportTop + block.height };
+      } catch {
+        return null;
+      }
+    },
+    scrollAnchorIntoView(exact) {
+      const view = cmRef.current?.view;
+      if (!view || !exact) return;
+      const idx = findApproxIndex(view.state.doc.toString(), exact);
+      if (idx < 0) return;
+      view.dispatch({
+        effects: EditorView.scrollIntoView(idx, { y: "center" }),
+      });
+    },
+  }), []);
 
   return (
     <div className="space-y-3">
@@ -276,7 +361,9 @@ export default function EditorPane({
       </div>
     </div>
   );
-}
+});
+
+export default EditorPane;
 
 // ToolbarButton is the tiny styled wrapper for every formatting
 // button. preventDefault on mouseDown keeps the editor focused so

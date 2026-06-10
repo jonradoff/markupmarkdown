@@ -182,7 +182,7 @@ export default function DocumentToolbar({
         )}
         updated {formatRelative(doc.updatedAt)}
         {!me && !signedIn && (
-          <span className="ml-2 text-amber-600">· Set your name in the header to comment</span>
+          <span className="ml-2" style={{ color: "var(--color-warn-action)" }}>· Set your name in the header to comment</span>
         )}
       </div>
 
