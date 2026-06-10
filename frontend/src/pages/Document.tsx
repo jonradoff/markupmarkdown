@@ -947,6 +947,37 @@ export default function DocumentPage() {
     }
   }, [activeId]);
 
+  // Sidebar: scroll the active comment WRAPPER (card + Prev/Next
+  // strip beneath it) fully into view. CommentCard used to do its
+  // own scrollIntoView on the card alone, which left the Prev/Next
+  // controls just below the fold. We scroll the wrapper instead so
+  // the controls land on-screen with the card.
+  useEffect(() => {
+    if (!activeId) return;
+    const sb = sidebarRef.current;
+    const wrap = cardRefs.current[activeId];
+    if (!sb || !wrap) return;
+    // Use raf so this fires after the layout effect that positioned
+    // the card via cardTops — otherwise we'd be scrolling against
+    // pre-layout offsets.
+    const id = requestAnimationFrame(() => {
+      const sbRect = sb.getBoundingClientRect();
+      const wRect = wrap.getBoundingClientRect();
+      const above = wRect.top - sbRect.top;
+      const below = wRect.bottom - sbRect.bottom;
+      const headroom = topHeaderH + navBarH + 8;
+      if (above < headroom) {
+        sb.scrollBy({ top: above - headroom, behavior: "smooth" });
+      } else if (below > -8) {
+        // Bring the bottom up to the visible area (with a small
+        // padding) — this is what fixes the "Prev/Next is just
+        // off-screen" annoyance.
+        sb.scrollBy({ top: below + 16, behavior: "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [activeId, cardTops, topHeaderH, navBarH]);
+
   // Move active comment by `dir` (-1 prev, +1 next). Wraps at the ends so
   // pressing Next on the last comment goes back to the first.
   const stepComment = useCallback(

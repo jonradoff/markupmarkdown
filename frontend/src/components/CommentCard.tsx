@@ -122,14 +122,11 @@ export default function CommentCard({
   const [busy, setBusy] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (active) {
-      cardRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
-    }
-  }, [active]);
+  // Sidebar scroll-on-activate lives on the parent wrapper in
+  // Document.tsx (not here), so the scroll target includes the
+  // CommentStepNav rendered below the card — otherwise the Prev/Next
+  // buttons land just off-screen and the user has to scroll manually
+  // to reach them.
 
   // Keep edit-body in sync with the comment body when realtime updates come in
   useEffect(() => {
