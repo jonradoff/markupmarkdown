@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,6 +50,7 @@ func (s *Store) DocumentViews() *mongo.Collection  { return s.db.Collection("doc
 func (s *Store) Notifications() *mongo.Collection  { return s.db.Collection("notifications") }
 func (s *Store) APITokens() *mongo.Collection      { return s.db.Collection("api_tokens") }
 func (s *Store) TokenEvents() *mongo.Collection    { return s.db.Collection("token_events") }
+func (s *Store) Indexes() *mongo.Collection        { return s.db.Collection("indexes") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -93,6 +95,94 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 		{Keys: bson.D{{Key: "token_id", Value: 1}, {Key: "at", Value: -1}}},
 		{Keys: bson.D{{Key: "at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(tokenEventTTL)},
 	})
+	_, _ = s.Indexes().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "created_by_id", Value: 1}, {Key: "updated_at", Value: -1}}},
+		// Dedupe lookup: same creator pointing at the same source returns
+		// the existing index instead of minting a duplicate.
+		{Keys: bson.D{{Key: "created_by_id", Value: 1}, {Key: "kind", Value: 1}, {Key: "owner", Value: 1}, {Key: "repo", Value: 1}}},
+	})
+}
+
+// InsertIndex stores a new markdown-index row.
+func (s *Store) InsertIndex(ctx context.Context, i *models.Index) error {
+	_, err := s.Indexes().InsertOne(ctx, i)
+	return err
+}
+
+// GetIndex returns an index by id (not filtering deleted_at; callers
+// decide whether they want soft-deleted rows back).
+func (s *Store) GetIndex(ctx context.Context, id string) (*models.Index, error) {
+	var idx models.Index
+	if err := s.Indexes().FindOne(ctx, bson.M{"_id": id, "deleted_at": bson.M{"$exists": false}}).Decode(&idx); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &idx, nil
+}
+
+// ListIndexesForUser returns the live (non-deleted) indexes the user
+// has created, newest first.
+func (s *Store) ListIndexesForUser(ctx context.Context, userID string) ([]models.Index, error) {
+	cur, err := s.Indexes().Find(ctx,
+		bson.M{"created_by_id": userID, "deleted_at": bson.M{"$exists": false}},
+		options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.Index
+	for cur.Next(ctx) {
+		var i models.Index
+		if err := cur.Decode(&i); err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, nil
+}
+
+// FindIndexBySource looks up a creator's existing index pointing at the
+// given source so we can return it instead of minting a duplicate.
+// repo is "" for user/org indexes.
+func (s *Store) FindIndexBySource(ctx context.Context, userID string, kind models.IndexKind, owner, repo string) (*models.Index, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	var idx models.Index
+	if err := s.Indexes().FindOne(ctx, bson.M{
+		"created_by_id": userID,
+		"kind":          string(kind),
+		"owner":         owner,
+		"repo":          repo,
+		"deleted_at":    bson.M{"$exists": false},
+	}).Decode(&idx); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &idx, nil
+}
+
+// SoftDeleteIndex marks an index as deleted; the row sticks around for
+// the same reason documents do (a future restore flow + an audit
+// trail). Only the index's creator should call this — handler enforces.
+func (s *Store) SoftDeleteIndex(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+	_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"deleted_at": now}})
+	return err
+}
+
+// UpdateIndexTitle renames an index. Cookie-session only — checked at
+// the handler layer.
+func (s *Store) UpdateIndexTitle(ctx context.Context, id, title string) error {
+	_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set": bson.M{"title": title, "updated_at": time.Now().UTC()},
+	})
+	return err
 }
 
 // LogTokenEvent appends an entry to the per-token activity log.

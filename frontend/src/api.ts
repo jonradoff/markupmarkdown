@@ -7,6 +7,8 @@ import type {
   Comment,
   CreatedTokenResponse,
   DocumentSummary,
+  MarkdownIndex,
+  MarkdownIndexResponse,
   MdDocument,
   MentionCandidate,
   MergePreview,
@@ -217,6 +219,34 @@ export const api = {
       rootDocument?: { id: string; title: string };
       checkFailed?: boolean;
     }>(`/api/documents/${id}/check-source`, { method: "POST" }),
+
+  /** Create or fetch the user's existing markdown-index for the
+   * given GitHub URL (repo / user profile / org). The backend
+   * dedupes on (creator, source) so multiple POSTs return the same
+   * row. */
+  createIndex: (url: string, title?: string) =>
+    req<MarkdownIndexResponse>("/api/indexes", {
+      method: "POST",
+      body: JSON.stringify({ url, title: title ?? "" }),
+    }),
+
+  /** Fetch an index by id. Items are computed live — different
+   * viewers may see different listings if their repo access differs. */
+  getIndex: (id: string) => req<MarkdownIndexResponse>(`/api/indexes/${id}`),
+
+  /** Rename an index. Creator-only (cookie session). */
+  patchIndex: (id: string, title: string) =>
+    req<MarkdownIndexResponse>(`/api/indexes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  /** Soft-delete an index. Creator-only. */
+  deleteIndex: (id: string) =>
+    req<void>(`/api/indexes/${id}`, { method: "DELETE" }),
+
+  /** The signed-in user's indexes, newest first. */
+  listMyIndexes: () => req<MarkdownIndex[]>("/api/me/indexes"),
 
   /** Dismiss the source-drift banner for the doc's current
    * sourceLatestSha. Banner stays suppressed until a newer upstream

@@ -165,6 +165,43 @@ export interface PushbackInfo {
   repoHtmlUrl: string;
 }
 
+/** A shareable listing of `.md` files anchored to a github resource.
+ *  Kind controls what `owner` / `repo` mean:
+ *    - "repo": every `.md` file in `owner/repo`
+ *    - "user": top-level `.md` files across `owner`'s repos
+ *    - "org":  same as user but for an organization
+ *  Items are NOT stored — they're computed fresh on every view using
+ *  the viewer's GitHub token, so different viewers may see different
+ *  listings if their repo access differs. */
+export interface MarkdownIndex {
+  id: string;
+  kind: "repo" | "user" | "org";
+  owner: string;
+  repo?: string;
+  title: string;
+  sourceUrl: string;
+  private: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt?: string;
+}
+
+export interface MarkdownIndexItem {
+  title: string;
+  url: string;
+  repo?: string;
+  repoUrl?: string;
+  pathInRepo?: string;
+  description?: string;
+  updatedAt?: string;
+  private?: boolean;
+}
+
+export interface MarkdownIndexResponse extends MarkdownIndex {
+  items: MarkdownIndexItem[];
+  truncated?: boolean;
+}
+
 export interface PushbackResult {
   mode: "pr" | "direct";
   branch: string;

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -457,6 +458,245 @@ func sendJSON(ctx context.Context, method, apiURL, token string, body any, out a
 		}
 	}
 	return nil
+}
+
+// AccountKind discriminates between a github "user" and an "org" — the
+// REST API uses different endpoints to list their repos. /users/{name}
+// returns an account with a `type` field that's exactly one of those
+// two values.
+type AccountKind string
+
+const (
+	AccountKindUser AccountKind = "User"
+	AccountKindOrg  AccountKind = "Organization"
+)
+
+// AccountInfo is the slice of /users/{name} we use to (a) decide
+// whether to treat the URL as a user or org index and (b) keep the
+// display name + avatar around for the index header.
+type AccountInfo struct {
+	Login     string      `json:"login"`
+	Name      string      `json:"name"`
+	AvatarURL string      `json:"avatar_url"`
+	Type      AccountKind `json:"type"`
+	HTMLURL   string      `json:"html_url"`
+}
+
+// LookupAccount fetches /users/{name} which works for both User and
+// Organization accounts (GitHub disambiguates via the `type` field).
+// We use this to figure out whether github.com/anthropics is a user
+// profile or an org — the listing endpoints differ.
+func LookupAccount(ctx context.Context, accessToken, name string) (*AccountInfo, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/users/%s", url.PathEscape(name))
+	return fetchGitHubJSON[AccountInfo](ctx, accessToken, apiURL)
+}
+
+// RepoSummary is the slim view of GET /user/repos, /users/{u}/repos,
+// /orgs/{o}/repos used by the index-listing flow. We need the
+// default_branch to fetch the tree, the full_name as a stable
+// identifier, and the visibility/permissions so the UI can show a
+// private/public badge.
+type RepoSummary struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	Description   string `json:"description"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+	Fork          bool   `json:"fork"`
+	Archived      bool   `json:"archived"`
+	PushedAt      string `json:"pushed_at"`
+	UpdatedAt     string `json:"updated_at"`
+	Owner         struct {
+		Login string `json:"login"`
+	} `json:"owner"`
+}
+
+// listReposPaginated walks a GitHub list-repos endpoint until either
+// (a) we hit an empty page or (b) the safety cap kicks in. GitHub
+// returns 30/page by default; we ask for 100 to cut the round-trip
+// count. The cap (10 pages = 1000 repos) is well above the size of
+// any real org/user we'd index inline — anything beyond that
+// genuinely needs a separate scan job.
+func listReposPaginated(ctx context.Context, accessToken, base string) ([]RepoSummary, error) {
+	const perPage = 100
+	const maxPages = 10
+	out := make([]RepoSummary, 0, perPage)
+	for page := 1; page <= maxPages; page++ {
+		sep := "?"
+		if strings.Contains(base, "?") {
+			sep = "&"
+		}
+		apiURL := fmt.Sprintf("%s%sper_page=%d&page=%d", base, sep, perPage, page)
+		batch, err := fetchGitHubJSON[[]RepoSummary](ctx, accessToken, apiURL)
+		if err != nil {
+			return nil, err
+		}
+		if batch == nil || len(*batch) == 0 {
+			break
+		}
+		out = append(out, *batch...)
+		if len(*batch) < perPage {
+			break
+		}
+	}
+	return out, nil
+}
+
+// ListUserRepos returns the user's public repos (anonymous viewer) or
+// every repo the viewer's token can see for that owner. We can't ask
+// /users/{owner}/repos for private repos owned by `owner` — that
+// endpoint only returns public ones even when authenticated. For the
+// "I'm signed in and want to see private repos in my own profile"
+// case, /user/repos returns the authenticated user's full set
+// (public + private). We fold both into a single sorted result.
+func ListUserRepos(ctx context.Context, accessToken, owner string, viewerLogin string) ([]RepoSummary, error) {
+	all, err := listReposPaginated(ctx, accessToken,
+		fmt.Sprintf("https://api.github.com/users/%s/repos?type=owner&sort=updated", url.PathEscape(owner)))
+	if err != nil {
+		return nil, err
+	}
+	// If the viewer is the owner, fold in private repos via /user/repos.
+	if accessToken != "" && viewerLogin != "" && strings.EqualFold(viewerLogin, owner) {
+		mine, mErr := listReposPaginated(ctx, accessToken,
+			"https://api.github.com/user/repos?affiliation=owner&visibility=private&sort=updated")
+		if mErr == nil {
+			seen := make(map[int64]bool, len(all))
+			for _, r := range all {
+				seen[r.ID] = true
+			}
+			for _, r := range mine {
+				if !seen[r.ID] {
+					all = append(all, r)
+				}
+			}
+		}
+	}
+	return all, nil
+}
+
+// ListOrgRepos returns repos owned by an organization the viewer can
+// see. Public viewers get public repos; authenticated members get
+// everything they're entitled to (GitHub scopes the response to the
+// caller's org membership).
+func ListOrgRepos(ctx context.Context, accessToken, org string) ([]RepoSummary, error) {
+	return listReposPaginated(ctx, accessToken,
+		fmt.Sprintf("https://api.github.com/orgs/%s/repos?type=all&sort=updated", url.PathEscape(org)))
+}
+
+// TreeEntry is one row of GET /repos/{o}/{r}/git/trees/{sha}?recursive=1.
+type TreeEntry struct {
+	Path string `json:"path"`
+	Type string `json:"type"` // "blob" | "tree"
+	SHA  string `json:"sha"`
+	Size int64  `json:"size"`
+}
+
+type gitTreeResponse struct {
+	SHA       string      `json:"sha"`
+	Tree      []TreeEntry `json:"tree"`
+	Truncated bool        `json:"truncated"`
+}
+
+// ListRepoMarkdownFiles returns every `.md` (or `.markdown`) file in
+// the repo's default branch, scanning the git tree with `recursive=1`.
+// One round-trip even for thousands-of-files repos — the Contents
+// endpoint would require recursing per directory. `truncated` is true
+// for monorepos with >100k tree entries; we surface that via the
+// returned flag so callers can warn the user.
+func ListRepoMarkdownFiles(ctx context.Context, accessToken, owner, repo, ref string) ([]TreeEntry, bool, error) {
+	if ref == "" {
+		info, err := GetRepoInfo(ctx, accessToken, owner, repo)
+		if err != nil {
+			return nil, false, err
+		}
+		ref = info.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+	// Resolve ref → tree SHA. /git/trees accepts a branch name directly
+	// in modern GitHub, but the documented contract uses the commit SHA;
+	// GetBranchSHA gives us that explicitly.
+	sha, err := GetBranchSHA(ctx, accessToken, owner, repo, ref)
+	if err != nil {
+		// Empty repo / ref doesn't exist: surface as an empty listing.
+		var fe *FetchError
+		if errors.As(err, &fe) && (fe.StatusCode == http.StatusNotFound || fe.StatusCode == http.StatusConflict) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
+	tree, err := fetchGitHubJSON[gitTreeResponse](ctx, accessToken, apiURL)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]TreeEntry, 0, 16)
+	for _, e := range tree.Tree {
+		if e.Type != "blob" {
+			continue
+		}
+		lp := strings.ToLower(e.Path)
+		if strings.HasSuffix(lp, ".md") || strings.HasSuffix(lp, ".markdown") {
+			out = append(out, e)
+		}
+	}
+	return out, tree.Truncated, nil
+}
+
+// ListRepoTopLevelMarkdown is the user/org-index variant: same idea as
+// ListRepoMarkdownFiles, but limited to files at the repo root. For
+// multi-repo indexes we want one summary line per file rather than
+// every README/CONTRIBUTING/SECURITY.md scattered through subdirs.
+func ListRepoTopLevelMarkdown(ctx context.Context, accessToken, owner, repo, ref string) ([]TreeEntry, error) {
+	all, _, err := ListRepoMarkdownFiles(ctx, accessToken, owner, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TreeEntry, 0, len(all))
+	for _, e := range all {
+		if !strings.Contains(e.Path, "/") {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// fetchGitHubJSON is the variant of getJSON used by index-listing
+// helpers: it tolerates an empty token (anonymous, public-only) and
+// returns FetchError so callers can branch on the status code.
+func fetchGitHubJSON[T any](ctx context.Context, accessToken, apiURL string) (*T, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &FetchError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+			SSOURL:     parseSSOHeader(resp.Header.Get("X-GitHub-SSO")),
+		}
+	}
+	var out T
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // FetchGitHubFileContent uses the GitHub Contents API to load a file from a

@@ -64,6 +64,14 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}/check-source", a.checkSourceNow).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/drift/ignore", a.ignoreDriftSource).Methods("POST")
 
+	// Markdown indexes — a shareable listing of .md files in a github
+	// repo / user profile / org. Items are computed live per viewer.
+	r.HandleFunc("/api/indexes", a.createIndex).Methods("POST")
+	r.HandleFunc("/api/indexes/{id}", a.getIndex).Methods("GET")
+	r.HandleFunc("/api/indexes/{id}", a.patchIndex).Methods("PATCH")
+	r.HandleFunc("/api/indexes/{id}", a.deleteIndex).Methods("DELETE")
+	r.HandleFunc("/api/me/indexes", a.listMyIndexes).Methods("GET")
+
 	r.HandleFunc("/api/documents/{id}/comments", a.listComments).Methods("GET")
 	r.HandleFunc("/api/documents/{id}/comments", a.createComment).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/events", a.streamEvents).Methods("GET")

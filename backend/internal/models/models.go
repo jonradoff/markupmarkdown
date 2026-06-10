@@ -79,6 +79,48 @@ type Document struct {
 	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
 }
 
+// IndexKind discriminates between the three GitHub URL shapes a
+// markdown-index can target: a single repo (list every .md file in
+// the tree), a user profile (top-level .md files across each repo
+// the viewer can see), or an org (same, scoped to org-owned repos).
+type IndexKind string
+
+const (
+	IndexKindRepo IndexKind = "repo"
+	IndexKindUser IndexKind = "user"
+	IndexKindOrg  IndexKind = "org"
+)
+
+// Index is a shareable listing of markdown files anchored to a GitHub
+// resource. The CONTENT (file listing) is computed on view using the
+// viewer's GitHub token — different viewers may see different items if
+// their repo access differs, which is the desired behavior. We store
+// only the source identity + minimal metadata; items are never frozen.
+type Index struct {
+	ID        string    `bson:"_id" json:"id"`
+	Kind      IndexKind `bson:"kind" json:"kind"`
+	// Owner is the GitHub login (user or org). Always set.
+	Owner string `bson:"owner" json:"owner"`
+	// Repo is set when Kind=="repo"; empty for user/org indexes.
+	Repo string `bson:"repo,omitempty" json:"repo,omitempty"`
+	// Title is the human-readable label shown in lists. Defaults to a
+	// derived form (e.g., "anthropics/claude-code" or "anthropics") at
+	// create-time; the user can rename it later.
+	Title string `bson:"title" json:"title"`
+	// SourceURL is the canonical GitHub URL the index was created from.
+	SourceURL string `bson:"source_url" json:"sourceUrl"`
+	// Private is true when the underlying GitHub resource required
+	// authenticated access at create-time. Read handlers re-verify
+	// access on every view (same model as Document.Private).
+	Private bool `bson:"private" json:"private"`
+	// CreatedByID is the GitHub login of the creator. Empty for
+	// anonymously-created indexes (only possible for public targets).
+	CreatedByID string     `bson:"created_by_id,omitempty" json:"-"`
+	DeletedAt   *time.Time `bson:"deleted_at,omitempty" json:"deletedAt,omitempty"`
+	CreatedAt   time.Time  `bson:"created_at" json:"createdAt"`
+	UpdatedAt   time.Time  `bson:"updated_at" json:"updatedAt"`
+}
+
 // RevisionMeta records how an AI-generated revision was produced. This is
 // purely informational — used to surface "AI-revised, applied N comments" on
 // the doc page and for the version-history sidebar.

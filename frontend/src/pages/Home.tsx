@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, APIError } from "../api";
-import type { DocumentSummary, TrashItem } from "../types";
+import type { DocumentSummary, MarkdownIndex, TrashItem } from "../types";
 import { formatRelative } from "../utils/format";
 import ErrorBlock from "../components/ErrorBlock";
 import { useDialog } from "../components/Dialogs";
@@ -14,6 +14,7 @@ export default function HomePage() {
   const toast = useToast();
   const { user, githubEnabled, loginURL, loading: authLoading } = useAuth();
   const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
+  const [indexes, setIndexes] = useState<MarkdownIndex[] | null>(null);
   const [trash, setTrash] = useState<TrashItem[] | null>(null);
   const [showTrash, setShowTrash] = useState(false);
   const [error, setError] = useState<APIError | null>(null);
@@ -46,6 +47,13 @@ export default function HomePage() {
     } catch {
       setTrash([]);
     }
+    // Fetch the user's markdown-indexes — same gating as trash.
+    try {
+      const idxs = await api.listMyIndexes();
+      setIndexes(idxs);
+    } catch {
+      setIndexes([]);
+    }
   }
 
   async function restoreFromTrash(id: string) {
@@ -73,7 +81,19 @@ export default function HomePage() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.createFromURL(url.trim());
+      const trimmed = url.trim();
+      // Detect the three GitHub URL shapes that should create an
+      // INDEX (a listing) rather than a single document:
+      //   - github.com/owner            → user or org index
+      //   - github.com/owner/repo       → repo index
+      // Anything with /blob/, /tree/, /pull/, ... falls through to
+      // the existing single-document create flow.
+      if (isGitHubIndexTarget(trimmed)) {
+        const idx = await api.createIndex(trimmed);
+        navigate(`/i/${idx.id}`);
+        return;
+      }
+      const result = await api.createFromURL(trimmed);
       // Self-doc redirect: the user pasted one of our own doc URLs;
       // navigate to it instead of cloning the SPA HTML.
       if ("kind" in result && result.kind === "self_doc_redirect") {
@@ -119,6 +139,23 @@ export default function HomePage() {
     }
   }
 
+  async function handleDeleteIndex(id: string, title: string) {
+    const ok = await dialog.confirm({
+      title: "Delete this index?",
+      body: `Remove "${title}" from your library? The underlying GitHub files and any docs you've opened from them are untouched.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteIndex(id);
+      refresh();
+      toast.success("Index deleted.");
+    } catch (err) {
+      toast.error(toastMessageFor(err) || "Couldn't delete the index.");
+    }
+  }
+
   async function handleDelete(id: string, title: string) {
     const ok = await dialog.confirm({
       title: "Delete document?",
@@ -156,7 +193,7 @@ export default function HomePage() {
         <form onSubmit={addFromURL} className="flex gap-2">
           <input
             type="url"
-            placeholder="https://github.com/owner/repo/blob/main/README.md"
+            placeholder="https://github.com/owner/repo/blob/main/README.md  ·  or .../owner/repo  ·  or .../owner"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             className="flex-1 border border-rule rounded px-3 py-2 focus:outline-none focus:border-accent"
@@ -167,7 +204,11 @@ export default function HomePage() {
             disabled={busy || !url.trim()}
             className="px-4 py-2 rounded bg-accent text-accent-fg font-medium hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "Loading…" : "Open"}
+            {busy
+              ? "Loading…"
+              : isGitHubIndexTarget(url.trim())
+                ? "Index"
+                : "Open"}
           </button>
         </form>
         <div className="text-sm text-muted mt-3 flex items-center gap-3">
@@ -182,12 +223,64 @@ export default function HomePage() {
             />
           </label>
         </div>
+        <div className="text-xs text-faint mt-2">
+          Paste a repo URL (<code className="bg-soft px-1 rounded">owner/repo</code>)
+          to index every <code className="bg-soft px-1 rounded">.md</code> in it, or
+          a user / org URL (<code className="bg-soft px-1 rounded">owner</code>) to
+          list the top-level <code className="bg-soft px-1 rounded">.md</code> file
+          across their repos.
+        </div>
         {error && (
           <div className="mt-3">
             <ErrorBlock error={error} onDismiss={() => setError(null)} />
           </div>
         )}
       </div>
+
+      {/* Indexes the signed-in user has created. Lives above the
+          recent-docs list because a shared index is typically the
+          jumping-off point for the docs underneath. */}
+      {user && indexes && indexes.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold mb-3">Your indexes</h2>
+          <ul className="bg-card border border-rule rounded-lg divide-y divide-rule overflow-hidden">
+            {indexes.map((idx) => (
+              <li key={idx.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <Link to={`/i/${idx.id}`} className="text-sm font-medium text-ink hover:text-accent">
+                    {idx.title}
+                  </Link>
+                  <div className="text-xs text-muted mt-0.5">
+                    <span className="uppercase tracking-wide text-[10px] bg-soft text-faint rounded px-1 py-0.5 mr-2">
+                      {idx.kind}
+                    </span>
+                    {idx.private && (
+                      <span className="uppercase tracking-wide text-[10px] bg-warn-bg text-warn-ink rounded px-1 py-0.5 mr-2">
+                        private
+                      </span>
+                    )}
+                    <a
+                      href={idx.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:text-accent"
+                    >
+                      {idx.sourceUrl.replace(/^https:\/\/github\.com\//, "")}
+                    </a>
+                    {" · "}updated {formatRelative(idx.updatedAt)}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleDeleteIndex(idx.id, idx.title)}
+                  className="text-xs text-faint hover:text-danger shrink-0"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {authLoading ? (
         <div className="mt-8 text-muted text-sm">Loading…</div>
@@ -342,6 +435,43 @@ export default function HomePage() {
 // content crawlers reward). Section order mirrors the FAQPage schema
 // the backend injects so the on-page Q&As reinforce the structured
 // data.
+// isGitHubIndexTarget recognizes the URL shapes that should create a
+// markdown-INDEX rather than a single document:
+//   - github.com/owner            (user / org)
+//   - github.com/owner/repo       (repo)
+// /blob/, /tree/, /pull/, /issues/, raw URLs, etc. fall through to
+// the existing single-document create path. We also accept bare
+// `owner` / `owner/repo` strings for paste convenience.
+function isGitHubIndexTarget(raw: string): boolean {
+  if (!raw) return false;
+  let s = raw.trim();
+  // Bare `owner` or `owner/repo` — no scheme, no host.
+  if (!s.includes("://")) {
+    s = "https://github.com/" + s.replace(/^github\.com\//, "");
+  }
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return false;
+  }
+  const host = u.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com") return false;
+  const parts = u.pathname.split("/").filter(Boolean);
+  if (parts.length === 0 || parts.length > 2) return false;
+  // Disambiguate /owner/repo from /owner/<reserved>. Anything that
+  // looks like a github special section path (which can't be a repo)
+  // is NOT an index target.
+  const reserved = new Set([
+    "settings", "marketplace", "explore", "notifications", "pulls",
+    "issues", "search", "topics", "trending", "sponsors", "stars",
+    "watching", "new", "organizations", "login", "join",
+  ]);
+  if (reserved.has(parts[0].toLowerCase())) return false;
+  if (parts.length === 2 && reserved.has(parts[1].toLowerCase())) return false;
+  return true;
+}
+
 function MarketingSections() {
   return (
     <section className="mt-12 space-y-12">

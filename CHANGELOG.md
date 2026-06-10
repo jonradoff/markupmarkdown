@@ -8,6 +8,33 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Markdown indexes — shareable listings of `.md` files anchored to a
+  GitHub URL.** Three target shapes are recognized at the home-page
+  URL bar:
+  - `github.com/owner/repo` → repo index (every `.md` in the repo's
+    git tree, one round-trip via the recursive trees API).
+  - `github.com/owner` → user *or* org index, disambiguated via
+    `/users/{name}` and folded into the right `/users/.../repos` or
+    `/orgs/.../repos` listing. Lists each repo's **top-level** `.md`
+    files alongside the repo it belongs to (grouped in the UI).
+  Indexes live at their own stable URL (`/i/{slug}`), are shareable,
+  and items are computed live on every view using the viewer's
+  GitHub token — so different viewers may see different listings if
+  their repo access differs. Private repo indexes re-verify access
+  on every read; private repos in user/org listings are silently
+  filtered to what the viewer can see (no leakage). Archived repos
+  are excluded from user/org listings by default. The home page
+  gains a "Your indexes" section above "Your documents" so a saved
+  index is the natural jumping-off point for browsing a team's
+  markdown library. Backend: new `indexes` collection + handlers at
+  `POST/GET/PATCH/DELETE /api/indexes/:id` and
+  `GET /api/me/indexes`; new GitHub helpers `LookupAccount`,
+  `ListUserRepos`, `ListOrgRepos`, `ListRepoMarkdownFiles`,
+  `ListRepoTopLevelMarkdown`. Indexes are deduped per (creator,
+  source) so a second POST returns the existing row instead of
+  minting a duplicate. Clicking a file in the listing ingests it via
+  the existing `createFromURL` flow and lands the user on the doc
+  page so they can comment, edit, or push back.
 - **Prev/Next hunk navigation in the diff viewer.** Both the
   AI-revise preview and the 3-way merge diff get a `‹ Prev / Next ›`
   pair plus a `N / total` counter in the diff toolbar. Each press
