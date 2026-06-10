@@ -122,6 +122,13 @@ export default function DocumentPage() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  // The .relative container that holds the absolutely-positioned
+  // comment cards. Used as the coordinate-space origin for cardTops —
+  // computing `desiredTop = highlightViewportTop - containerTop` is
+  // robust to every layout above it (sticky headers, doc-level
+  // section, padding, sidebar scroll) because the container's
+  // bounding rect already reflects all of that.
+  const anchorsContainerRef = useRef<HTMLDivElement>(null);
   // Imperative handle to the CodeMirror editor when editing. Lets the
   // anchored card layout pull editor-relative anchor coordinates.
   const editorRef = useRef<EditorPaneHandle>(null);
@@ -256,13 +263,16 @@ export default function DocumentPage() {
     const usingEditor = editing && editorRef.current;
     if (!usingEditor && !content) return;
     const sbBox = sidebar.getBoundingClientRect();
-    // The anchored-cards container lives BELOW the sticky header +
-    // nav bar in the sidebar's DOM flow, so its origin in
-    // scroll-content coords is offset by (topHeaderH + navBarH).
-    // Subtracting that here makes a card with desiredTop=N land at
-    // viewport y = highlightTop exactly, instead of being pushed
-    // down by the sticky-headers' combined height.
-    const headerOffset = topHeaderH + navBarH;
+    const container = anchorsContainerRef.current;
+    if (!container) return;
+    // The cards live absolutely-positioned inside `container`, so
+    // their `top: N` maps to viewport y = containerRect.top + N.
+    // Anchoring N off the container's bounding rect (which already
+    // accounts for sticky headers, doc-level / orphan sections,
+    // padding, AND sidebar scroll) means we don't have to hand-
+    // calculate any of that — and the formula stays identical for
+    // edit mode and view mode.
+    const containerRect = container.getBoundingClientRect();
     const items = visibleComments
       .map((c) => {
         let top: number | null = null;
@@ -282,7 +292,7 @@ export default function DocumentPage() {
         const height = wrapper?.offsetHeight ?? 120;
         return {
           id: c.id,
-          desiredTop: top - sbBox.top + sidebar.scrollTop - headerOffset,
+          desiredTop: top - containerRect.top,
           height,
         };
       })
@@ -297,11 +307,14 @@ export default function DocumentPage() {
     // viewport, but the anchored container's coordinate space is
     // sidebar-local — so we just add enough top padding for the bars
     // to clear the first card.
-    // Cards must stay below the sticky header + nav bar visually
-    // (those overlay the top of the sidebar). In the corrected
-    // coordinate system the threshold is scrollTop + small padding —
-    // the sticky-header offset is already baked into desiredTop.
-    const minTop = sidebar.scrollTop + 8;
+    // Cards must stay below the sticky header + nav bar visually.
+    // The stickies' bottom edge in viewport coords is
+    //   sbBox.top + topHeaderH + navBarH
+    // Translating to container-relative space (so it composes with
+    // desiredTop above):
+    //   minTop = (stickyBottomViewport - containerRect.top) + buffer
+    const stickyBottomY = sbBox.top + topHeaderH + navBarH;
+    const minTop = Math.max(0, stickyBottomY - containerRect.top + 8);
     const padded = items.map((it) =>
       it.desiredTop < minTop ? { ...it, desiredTop: minTop } : it
     );
@@ -1418,6 +1431,7 @@ export default function DocumentPage() {
           // the container an explicit min-height covering the lowest
           // card so it scrolls naturally.
           <div
+            ref={anchorsContainerRef}
             className="relative px-3 pb-6"
             style={{
               minHeight: (() => {

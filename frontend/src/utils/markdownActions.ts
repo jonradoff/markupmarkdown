@@ -9,22 +9,26 @@ export interface EditState {
   selectionEnd: number;
 }
 
-// applyWrap wraps the selection with `marker` on each side. With no
-// selection, inserts the pair and places the cursor between them so
-// the user can start typing inside. With a selection, toggles —
-// removing the markers if they already surround the selection.
+// applyWrap wraps the selection with `marker` on each side. Toggles
+// off when the markers are already in place — either flanking the
+// selection (the selection is exactly the inside of an existing wrap)
+// or included in the selection (user dragged past the existing markers,
+// the common selection-overshoot pattern). Strips one layer instead
+// of doubling up in both cases.
+//
+// With no selection, inserts the pair and places the cursor between
+// them so the user can start typing inside.
 export function applyWrap(s: EditState, marker: string): EditState {
   const { text, selectionStart, selectionEnd } = s;
   const before = text.slice(0, selectionStart);
   const inside = text.slice(selectionStart, selectionEnd);
   const after = text.slice(selectionEnd);
 
-  // Toggle off: selection already surrounded by markers, strip them.
-  if (
-    before.endsWith(marker) &&
-    after.startsWith(marker)
-  ) {
-    const newText = before.slice(0, -marker.length) + inside + after.slice(marker.length);
+  // Toggle off, case A: markers sit just OUTSIDE the selection.
+  // e.g. selection = "bold" inside "**bold**".
+  if (before.endsWith(marker) && after.startsWith(marker)) {
+    const newText =
+      before.slice(0, -marker.length) + inside + after.slice(marker.length);
     return {
       text: newText,
       selectionStart: selectionStart - marker.length,
@@ -32,7 +36,24 @@ export function applyWrap(s: EditState, marker: string): EditState {
     };
   }
 
-  // Inserting the wrap.
+  // Toggle off, case B: markers are INCLUDED in the selection.
+  // e.g. the user double-clicked or dragged past the `**` on both
+  // sides — selection = "**bold**". Strip one layer from inside;
+  // selection shrinks by 2*marker.length.
+  if (
+    inside.length >= 2 * marker.length &&
+    inside.startsWith(marker) &&
+    inside.endsWith(marker)
+  ) {
+    const stripped = inside.slice(marker.length, inside.length - marker.length);
+    return {
+      text: before + stripped + after,
+      selectionStart,
+      selectionEnd: selectionEnd - 2 * marker.length,
+    };
+  }
+
+  // Insert the wrap. No selection → caret between the markers.
   if (inside.length === 0) {
     const newText = before + marker + marker + after;
     const caret = selectionStart + marker.length;
@@ -42,9 +63,8 @@ export function applyWrap(s: EditState, marker: string): EditState {
       selectionEnd: caret,
     };
   }
-  const newText = before + marker + inside + marker + after;
   return {
-    text: newText,
+    text: before + marker + inside + marker + after,
     selectionStart: selectionStart + marker.length,
     selectionEnd: selectionEnd + marker.length,
   };

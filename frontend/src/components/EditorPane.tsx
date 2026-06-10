@@ -273,48 +273,52 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 sticky top-0 z-10 bg-card border border-rule rounded-md px-3 py-2 shadow-sm">
-        <div className="text-sm font-medium">Editing</div>
-        <div className="text-xs text-muted">
-          {dirty ? "Unsaved changes" : "No changes yet"} ·{" "}
-          <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">⌘S</kbd>{" "}
-          to save ·{" "}
-          <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">⌘F</kbd>{" "}
-          to find ·{" "}
-          <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">Esc</kbd> to cancel
+      {/* Action bar + formatting toolbar share one sticky frame so
+          the formatting controls stay visible as the page scrolls
+          through a long document. */}
+      <div className="sticky top-0 z-10 bg-card border border-rule rounded-md shadow-sm">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <div className="text-sm font-medium">Editing</div>
+          <div className="text-xs text-muted">
+            {dirty ? "Unsaved changes" : "No changes yet"} ·{" "}
+            <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">⌘S</kbd>{" "}
+            to save ·{" "}
+            <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">⌘F</kbd>{" "}
+            to find ·{" "}
+            <kbd className="text-[10px] bg-soft border border-rule px-1 rounded">Esc</kbd> to cancel
+          </div>
+          <button
+            onClick={openSearch}
+            className="ml-auto text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+            title="Find & replace (⌘F)"
+          >
+            Find
+          </button>
+          <button
+            onClick={() => setShowPreview((v) => !v)}
+            className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
+            title="Toggle live preview"
+          >
+            {showPreview ? "Hide preview" : "Show preview"}
+          </button>
+          <button
+            onClick={onCancel}
+            disabled={saving}
+            className="text-xs px-3 py-1 rounded border border-rule text-muted hover:text-ink"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(content)}
+            disabled={!dirty || saving}
+            className="text-xs px-3 py-1 rounded bg-accent text-accent-fg font-medium hover:opacity-90 disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save as revision"}
+          </button>
         </div>
-        <button
-          onClick={openSearch}
-          className="ml-auto text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
-          title="Find & replace (⌘F)"
-        >
-          Find
-        </button>
-        <button
-          onClick={() => setShowPreview((v) => !v)}
-          className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-soft"
-          title="Toggle live preview"
-        >
-          {showPreview ? "Hide preview" : "Show preview"}
-        </button>
-        <button
-          onClick={onCancel}
-          disabled={saving}
-          className="text-xs px-3 py-1 rounded border border-rule text-muted hover:text-ink"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => onSave(content)}
-          disabled={!dirty || saving}
-          className="text-xs px-3 py-1 rounded bg-accent text-accent-fg font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          {saving ? "Saving…" : "Save as revision"}
-        </button>
-      </div>
 
-      {/* Formatting toolbar. */}
-      <div className="flex flex-wrap items-center gap-1 text-xs text-muted border border-rule rounded-md px-2 py-1.5 bg-card">
+        {/* Formatting toolbar. */}
+        <div className="flex flex-wrap items-center gap-1 text-xs text-muted border-t border-rule px-2 py-1.5">
         <ToolbarButton title="Bold (⌘B)" onClick={() => applyAction((s) => applyWrap(s, "**"))}><b>B</b></ToolbarButton>
         <ToolbarButton title="Italic (⌘I)" onClick={() => applyAction((s) => applyWrap(s, "_"))}><i>I</i></ToolbarButton>
         <ToolbarButton title="Strikethrough" onClick={() => applyAction((s) => applyWrap(s, "~~"))}><span style={{ textDecoration: "line-through" }}>S</span></ToolbarButton>
@@ -332,6 +336,7 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
         <ToolbarButton title="Link (⌘K)" onClick={() => applyAction(applyLink)}>Link</ToolbarButton>
         <ToolbarButton title="Code block" onClick={() => applyAction(applyCodeBlock)}>{`{ }`}</ToolbarButton>
         <ToolbarButton title="Horizontal rule" onClick={() => applyAction(applyHR)}>—</ToolbarButton>
+        </div>
       </div>
 
       <div className={`grid gap-3 ${showPreview ? "md:grid-cols-2" : "grid-cols-1"}`}>
