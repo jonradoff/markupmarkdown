@@ -57,6 +57,10 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 	if touched == nil {
 		touched = []models.Document{}
 	}
+	// Drop docs the user has Forgotten — checked against the leaf the
+	// listing would show, not the root, so forgetting a chain hides
+	// the chain regardless of which node we walk to.
+	hidden, _ := a.store.HiddenItemIDs(r.Context(), user.ID, "doc")
 
 	type summary struct {
 		ID          string `json:"id"`
@@ -94,6 +98,12 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seenRoot[root.ID] = true
+		// Forget is keyed on the chain root — forgetting any node in
+		// the chain hides the whole chain so a later revision doesn't
+		// re-surface the entry.
+		if hidden[root.ID] {
+			continue
+		}
 
 		// Walk to leaf so the entry surfaces the current state. If the
 		// "root" itself is soft-deleted (Jon's case: deleted the
@@ -484,6 +494,36 @@ func (a *API) deleteDocument(w http.ResponseWriter, r *http.Request) {
 	// is what eventually removes it for real.
 	if err := a.store.SoftDeleteDocument(r.Context(), id); err != nil {
 		internalError(w, "store.soft_delete", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// forgetDocument is the per-user soft-hide of a doc from this user's
+// "Your documents" list. Distinct from delete: the doc still exists
+// for everyone else, the user just doesn't want to see it in their
+// own recents. Forget is keyed on the chain root so revisions of a
+// forgotten chain don't re-surface.
+func (a *API) forgetDocument(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	user := a.currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	// We still want a real (or formerly-real) doc — guard against
+	// arbitrary ID stuffing into the hidden_items collection.
+	if _, accErr := a.checkDocAccess(r, id); accErr != nil {
+		a.writeAccessError(w, r, accErr)
+		return
+	}
+	root, err := a.store.RootDocument(r.Context(), id)
+	rootID := id
+	if err == nil && root != nil {
+		rootID = root.ID
+	}
+	if err := a.store.HideItem(r.Context(), user.ID, "doc", rootID); err != nil {
+		internalError(w, "store.hide_doc", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

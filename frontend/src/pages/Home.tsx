@@ -139,6 +139,26 @@ export default function HomePage() {
     }
   }
 
+  async function handleForget(id: string, title: string) {
+    try {
+      await api.forgetDocument(id);
+      setDocs((cur) => (cur ? cur.filter((d) => d.id !== id) : cur));
+      toast.success(`Hid "${title}" from your list.`);
+    } catch (err) {
+      toast.error(toastMessageFor(err) || "Couldn't forget that document.");
+    }
+  }
+
+  async function handleForgetIndex(id: string, title: string) {
+    try {
+      await api.forgetIndex(id);
+      setIndexes((cur) => (cur ? cur.filter((i) => i.id !== id) : cur));
+      toast.success(`Hid "${title}" from your list.`);
+    } catch (err) {
+      toast.error(toastMessageFor(err) || "Couldn't forget that index.");
+    }
+  }
+
   async function handleDeleteIndex(id: string, title: string) {
     const ok = await dialog.confirm({
       title: "Delete this index?",
@@ -270,12 +290,21 @@ export default function HomePage() {
                     {" · "}updated {formatRelative(idx.updatedAt)}
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDeleteIndex(idx.id, idx.title)}
-                  className="text-xs text-faint hover:text-danger shrink-0"
-                >
-                  Delete
-                </button>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => handleForgetIndex(idx.id, idx.title)}
+                    className="text-xs text-faint hover:text-ink"
+                    title="Hide from your list without deleting (the share link still works for others)"
+                  >
+                    Forget
+                  </button>
+                  <button
+                    onClick={() => handleDeleteIndex(idx.id, idx.title)}
+                    className="text-xs text-faint hover:text-danger"
+                  >
+                    Delete
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -338,9 +367,20 @@ export default function HomePage() {
               <div className="min-w-0">
                 <Link
                   to={`/d/${d.id}`}
-                  className="font-medium text-ink hover:text-accent flex items-center gap-2"
+                  className="font-medium text-ink hover:text-accent flex items-center gap-2 flex-wrap"
                 >
                   <span className="truncate">{d.title}</span>
+                  {d.githubOwner && d.githubRepo && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-soft text-muted shrink-0 font-medium"
+                      title={`From ${d.githubOwner}/${d.githubRepo}`}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                        <path fillRule="evenodd" d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 1 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5v-9zm10.5-1H4.5a1 1 0 0 0-1 1v7.337A2.99 2.99 0 0 1 4.5 9.5h8v-8z" />
+                      </svg>
+                      {d.githubOwner}/{d.githubRepo}
+                    </span>
+                  )}
                   {d.revisionCount && d.revisionCount > 1 && (
                     <span
                       className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-accent-soft text-accent shrink-0"
@@ -375,12 +415,21 @@ export default function HomePage() {
                   {" · "}updated {formatRelative(d.updatedAt)}
                 </div>
               </div>
-              <button
-                onClick={() => handleDelete(d.id, d.title)}
-                className="text-sm text-faint hover:text-danger ml-4"
-              >
-                Delete
-              </button>
+              <div className="flex items-center gap-3 ml-4 shrink-0">
+                <button
+                  onClick={() => handleForget(d.id, d.title)}
+                  className="text-xs text-faint hover:text-ink"
+                  title="Hide from your list without deleting (others who can see this doc still can)"
+                >
+                  Forget
+                </button>
+                <button
+                  onClick={() => handleDelete(d.id, d.title)}
+                  className="text-xs text-faint hover:text-danger"
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           ))}
         </ul>

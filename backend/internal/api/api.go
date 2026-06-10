@@ -58,6 +58,7 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}", a.patchDocument).Methods("PATCH")
 	r.HandleFunc("/api/documents/{id}", a.deleteDocument).Methods("DELETE")
 	r.HandleFunc("/api/documents/{id}/restore", a.restoreDocument).Methods("POST")
+	r.HandleFunc("/api/documents/{id}/forget", a.forgetDocument).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/sync", a.syncDocumentSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/merge-preview", a.mergePreviewSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/merge-accept", a.mergeAcceptSource).Methods("POST")
@@ -68,8 +69,10 @@ func (a *API) Register(r *mux.Router) {
 	// repo / user profile / org. Items are computed live per viewer.
 	r.HandleFunc("/api/indexes", a.createIndex).Methods("POST")
 	r.HandleFunc("/api/indexes/{id}", a.getIndex).Methods("GET")
+	r.HandleFunc("/api/indexes/{id}/stream", a.streamIndexItems).Methods("GET")
 	r.HandleFunc("/api/indexes/{id}", a.patchIndex).Methods("PATCH")
 	r.HandleFunc("/api/indexes/{id}", a.deleteIndex).Methods("DELETE")
+	r.HandleFunc("/api/indexes/{id}/forget", a.forgetIndex).Methods("POST")
 	r.HandleFunc("/api/me/indexes", a.listMyIndexes).Methods("GET")
 
 	r.HandleFunc("/api/documents/{id}/comments", a.listComments).Methods("GET")

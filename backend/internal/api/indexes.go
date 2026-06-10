@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -193,7 +195,14 @@ func (a *API) createIndex(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "store.insert_index", err)
 		return
 	}
-	a.respondIndexWithItems(w, r, idx)
+	// Return the meta IMMEDIATELY without materializing items. The
+	// frontend navigates to /i/{slug} and opens the SSE stream, so
+	// the user sees progress within a few hundred ms instead of
+	// staring at "Loading…" for the duration of the org scan.
+	writeJSON(w, http.StatusOK, indexResponse{
+		Index: *idx,
+		Items: []indexItem{},
+	})
 }
 
 // getIndex implements GET /api/indexes/:id. Re-verifies access on
@@ -241,7 +250,48 @@ func (a *API) listMyIndexes(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []models.Index{}
 	}
+	// Filter out Forgotten indexes — the index still exists (share
+	// link works for others), but the user has dismissed it from
+	// their home list.
+	hidden, _ := a.store.HiddenItemIDs(r.Context(), user.ID, "index")
+	if len(hidden) > 0 {
+		live := rows[:0]
+		for _, i := range rows {
+			if !hidden[i.ID] {
+				live = append(live, i)
+			}
+		}
+		rows = live
+	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// forgetIndex implements POST /api/indexes/:id/forget. Per-user
+// soft-hide — the index isn't deleted (the share link still resolves
+// for anyone with it), but it disappears from this user's home list.
+// Owner doesn't need to be the creator; anyone who's seen a share
+// link can hide it from their own clutter.
+func (a *API) forgetIndex(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	user := a.currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "sign in required")
+		return
+	}
+	idx, err := a.store.GetIndex(r.Context(), id)
+	if err != nil {
+		internalError(w, "store.get_index_forget", err)
+		return
+	}
+	if idx == nil {
+		writeError(w, http.StatusNotFound, "index not found")
+		return
+	}
+	if err := a.store.HideItem(r.Context(), user.ID, "index", id); err != nil {
+		internalError(w, "store.hide_index", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // deleteIndex implements DELETE /api/indexes/:id. Owner-only.
@@ -275,7 +325,9 @@ func (a *API) deleteIndex(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// patchIndex implements PATCH /api/indexes/:id — rename only.
+// patchIndex implements PATCH /api/indexes/:id — rename + pin the
+// default filter for share-link visitors. Both fields are optional
+// in the body; only the fields supplied are updated. Creator-only.
 func (a *API) patchIndex(w http.ResponseWriter, r *http.Request) {
 	capBody(w, r, 1024)
 	id := mux.Vars(r)["id"]
@@ -297,29 +349,43 @@ func (a *API) patchIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if idx.CreatedByID != user.ID {
-		writeError(w, http.StatusForbidden, "only the index's creator can rename it")
+		writeError(w, http.StatusForbidden, "only the index's creator can edit it")
 		return
 	}
 	var body struct {
-		Title string `json:"title"`
+		Title         *string `json:"title,omitempty"`
+		DefaultFilter *string `json:"defaultFilter,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	title := strings.TrimSpace(body.Title)
-	if title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+	if body.Title != nil {
+		title := strings.TrimSpace(*body.Title)
+		if title == "" {
+			writeError(w, http.StatusBadRequest, "title is required")
+			return
+		}
+		if len(title) > 200 {
+			title = title[:200]
+		}
+		if err := a.store.UpdateIndexTitle(r.Context(), id, title); err != nil {
+			internalError(w, "store.update_index_title", err)
+			return
+		}
+		idx.Title = title
 	}
-	if len(title) > 200 {
-		title = title[:200]
+	if body.DefaultFilter != nil {
+		filter := strings.TrimSpace(*body.DefaultFilter)
+		if len(filter) > 100 {
+			filter = filter[:100]
+		}
+		if err := a.store.UpdateIndexDefaultFilter(r.Context(), id, filter); err != nil {
+			internalError(w, "store.update_index_default_filter", err)
+			return
+		}
+		idx.DefaultFilter = filter
 	}
-	if err := a.store.UpdateIndexTitle(r.Context(), id, title); err != nil {
-		internalError(w, "store.update_index_title", err)
-		return
-	}
-	idx.Title = title
 	a.respondIndexWithItems(w, r, idx)
 }
 
@@ -336,19 +402,52 @@ func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx 
 		token = user.AccessToken
 		viewerLogin = user.Login
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// User/org indexes can take 30+ s when the org has many repos; bump
+	// the timeout accordingly. Repo indexes are bounded by one tree
+	// fetch and stay under 10 s.
+	timeout := 60 * time.Second
+	if idx.Kind == models.IndexKindRepo {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	items, truncated, err := materializeIndex(ctx, idx, token, viewerLogin)
-	if err != nil {
-		// Surface fetch failures verbatim — the user pasted a URL that
-		// GitHub now refuses, and we want them to see the specific reason.
-		a.writeFetchError(w, r, idx.SourceURL, err)
+	// For non-streaming callers we collect the events into a single
+	// payload. The streaming variant emits them as SSE in real time.
+	events := make(chan progressEvent, 64)
+	var (
+		items     []indexItem
+		truncated bool
+		fetchErr  error
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fetchErr = materializeIndexStreaming(ctx, idx, token, viewerLogin, events)
+	}()
+	for ev := range events {
+		if len(ev.Items) > 0 {
+			items = append(items, ev.Items...)
+		}
+		if ev.Truncated {
+			truncated = true
+		}
+	}
+	<-done
+	if fetchErr != nil {
+		a.writeFetchError(w, r, idx.SourceURL, fetchErr)
 		return
 	}
 	if items == nil {
 		items = []indexItem{}
 	}
+	// Stable sort so the listing isn't reshuffled by goroutine timing.
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].PathInRepo < items[j].PathInRepo
+	})
 	writeJSON(w, http.StatusOK, indexResponse{
 		Index:     *idx,
 		Items:     items,
@@ -356,19 +455,151 @@ func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx 
 	})
 }
 
-// materializeIndex performs the live GitHub listing for an index. For
-// repo indexes we walk the git tree once and emit every .md file. For
-// user/org indexes we list repos (paginated, capped at 1000) and pull
-// each repo's top-level .md files in parallel-ish (sequential for
-// simplicity, since we're bounded by GitHub's rate limit anyway).
-func materializeIndex(ctx context.Context, idx *models.Index, token, viewerLogin string) ([]indexItem, bool, error) {
+// streamIndexItems implements GET /api/indexes/:id/stream. Emits
+// progress events as Server-Sent Events while the index materializes,
+// so the frontend can show "Scanning 47/142 repos" and append items
+// the moment each repo lands instead of staring at a blank "Loading…"
+// for 30+ seconds. Access checks mirror getIndex.
+func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	idx, err := a.store.GetIndex(r.Context(), id)
+	if err != nil {
+		internalError(w, "store.get_index_stream", err)
+		return
+	}
+	if idx == nil {
+		writeError(w, http.StatusNotFound, "index not found")
+		return
+	}
+	user := a.currentUser(r)
+	if idx.Kind == models.IndexKindRepo && idx.Private {
+		if user == nil {
+			writeError(w, http.StatusUnauthorized, "sign in required")
+			return
+		}
+		ok, accErr := a.checkPrivateRepoAccess(r.Context(), user, idx)
+		if accErr != nil || !ok {
+			writeError(w, http.StatusForbidden, "you don't have access to this index's source repo")
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx/Cloudflare proxy buffering
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+
+	token := ""
+	viewerLogin := ""
+	if user != nil {
+		token = user.AccessToken
+		viewerLogin = user.Login
+	}
+	timeout := 90 * time.Second
+	if idx.Kind == models.IndexKindRepo {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	events := make(chan progressEvent, 64)
+	done := make(chan error, 1)
+	go func() {
+		done <- materializeIndexStreaming(ctx, idx, token, viewerLogin, events)
+	}()
+
+	emit := func(kind string, payload any) {
+		data, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, data)
+		flusher.Flush()
+	}
+	// First event is the index meta so the frontend can render
+	// title / source / private-flag without a separate round trip.
+	emit("meta", idx)
+	// Then a "ready" so the UI can swap "Loading…" for "Starting scan…"
+	// before the first GitHub round-trip lands.
+	emit("ready", map[string]any{"kind": idx.Kind})
+
+	// Heartbeat every 10s so proxies don't time out an in-flight scan.
+	hb := time.NewTicker(10 * time.Second)
+	defer hb.Stop()
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				err := <-done
+				if err != nil {
+					emit("error", map[string]string{"message": err.Error()})
+				} else {
+					emit("done", map[string]bool{"ok": true})
+				}
+				return
+			}
+			emit(ev.Kind, ev)
+		case <-hb.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// checkPrivateRepoAccess wraps the repo-access check for private
+// indexes — pulled out so both getIndex and streamIndexItems share the
+// same gate.
+func (a *API) checkPrivateRepoAccess(ctx context.Context, user *models.User, idx *models.Index) (bool, error) {
+	return auth.CheckRepoAccess(ctx, user.AccessToken, idx.Owner, idx.Repo)
+}
+
+// progressEvent is the unit of work materializeIndexStreaming pushes
+// onto its sink channel. Three flavors:
+//   - "status": just a human-readable message ("Looking up beamable…")
+//   - "scanning": progress markers (Current/Total) during a multi-repo scan
+//   - "items": a batch of items to append to the index (typically one
+//     repo's worth)
+type progressEvent struct {
+	Kind      string      `json:"kind"`
+	Message   string      `json:"message,omitempty"`
+	Current   int         `json:"current,omitempty"`
+	Total     int         `json:"total,omitempty"`
+	Repo      string      `json:"repo,omitempty"`
+	Items     []indexItem `json:"items,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
+}
+
+// materializeIndexStreaming performs the live GitHub listing for an
+// index and pushes progress events as it goes. Closes `events` on
+// return so consumers can range over it. Errors bail the operation
+// (vs. per-repo errors which just skip that repo).
+//
+// For user/org indexes we fan out the per-repo fetches across a
+// bounded worker pool so a 142-repo org doesn't pay 142 * RTT
+// sequentially. 8 workers is chosen to stay well under GitHub's
+// 5000-req/hour authenticated limit even on the worst case.
+func materializeIndexStreaming(ctx context.Context, idx *models.Index, token, viewerLogin string, events chan<- progressEvent) (err error) {
+	defer close(events)
+	send := func(ev progressEvent) {
+		select {
+		case events <- ev:
+		case <-ctx.Done():
+		}
+	}
+
 	switch idx.Kind {
 	case models.IndexKindRepo:
-		files, truncated, err := auth.ListRepoMarkdownFiles(ctx, token, idx.Owner, idx.Repo, "")
-		if err != nil {
-			return nil, false, err
+		send(progressEvent{Kind: "status", Message: "Reading repo tree…"})
+		files, truncated, fErr := auth.ListRepoMarkdownFiles(ctx, token, idx.Owner, idx.Repo, "")
+		if fErr != nil {
+			return fErr
 		}
-		// Resolve default branch once for the constructed URLs.
 		info, _ := auth.GetRepoInfo(ctx, token, idx.Owner, idx.Repo)
 		ref := "main"
 		if info != nil && info.DefaultBranch != "" {
@@ -382,47 +613,111 @@ func materializeIndex(ctx context.Context, idx *models.Index, token, viewerLogin
 				PathInRepo: f.Path,
 			})
 		}
-		return out, truncated, nil
+		send(progressEvent{Kind: "items", Items: out, Truncated: truncated, Repo: idx.Owner + "/" + idx.Repo})
+		return nil
+
 	case models.IndexKindUser, models.IndexKindOrg:
+		send(progressEvent{Kind: "status", Message: "Looking up " + idx.Owner + " on GitHub…"})
 		var repos []auth.RepoSummary
-		var err error
+		var listErr error
 		if idx.Kind == models.IndexKindOrg {
-			repos, err = auth.ListOrgRepos(ctx, token, idx.Owner)
+			repos, listErr = auth.ListOrgRepos(ctx, token, idx.Owner)
 		} else {
-			repos, err = auth.ListUserRepos(ctx, token, idx.Owner, viewerLogin)
+			repos, listErr = auth.ListUserRepos(ctx, token, idx.Owner, viewerLogin)
 		}
-		if err != nil {
-			return nil, false, err
+		if listErr != nil {
+			return listErr
 		}
-		out := make([]indexItem, 0, 64)
+		// Drop archived repos up-front so the progress total reflects
+		// real work, not skipped-immediately rows.
+		live := make([]auth.RepoSummary, 0, len(repos))
 		for _, r := range repos {
-			if r.Archived {
-				// Drop archived repos from the listing by default — they're
-				// rarely the ones the user means to share around.
-				continue
-			}
-			files, fErr := auth.ListRepoTopLevelMarkdown(ctx, token, r.Owner.Login, r.Name, r.DefaultBranch)
-			if fErr != nil {
-				// One inaccessible repo shouldn't kill the whole listing
-				// — skip and keep going.
-				continue
-			}
-			for _, f := range files {
-				out = append(out, indexItem{
-					Title:       basename(f.Path),
-					URL:         fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", r.Owner.Login, r.Name, r.DefaultBranch, f.Path),
-					Repo:        r.FullName,
-					RepoURL:     r.HTMLURL,
-					PathInRepo:  f.Path,
-					Description: r.Description,
-					UpdatedAt:   r.PushedAt,
-					Private:     r.Private,
-				})
+			if !r.Archived {
+				live = append(live, r)
 			}
 		}
-		return out, false, nil
+		total := len(live)
+		send(progressEvent{
+			Kind:    "scanning",
+			Message: fmt.Sprintf("Scanning %d repo%s for markdown…", total, plural(total)),
+			Current: 0, Total: total,
+		})
+
+		// Worker pool. 8 in flight is a sweet spot: enough that beamable's
+		// ~150 repos complete in under 10 s, low enough to stay under
+		// GitHub's secondary rate limits.
+		const workers = 8
+		var (
+			wg     sync.WaitGroup
+			mu     sync.Mutex
+			doneN  int
+		)
+		jobs := make(chan auth.RepoSummary)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for r := range jobs {
+					files, fErr := auth.ListRepoTopLevelMarkdown(ctx, token, r.Owner.Login, r.Name, r.DefaultBranch)
+					mu.Lock()
+					doneN++
+					n := doneN
+					mu.Unlock()
+					if fErr != nil {
+						// One inaccessible / 404 repo doesn't kill the listing
+						// — bump the counter and move on.
+						send(progressEvent{
+							Kind:    "scanning",
+							Message: fmt.Sprintf("Skipped %s (no access)", r.FullName),
+							Current: n, Total: total,
+							Repo: r.FullName,
+						})
+						continue
+					}
+					batch := make([]indexItem, 0, len(files))
+					for _, f := range files {
+						batch = append(batch, indexItem{
+							Title:       basename(f.Path),
+							URL:         fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", r.Owner.Login, r.Name, r.DefaultBranch, f.Path),
+							Repo:        r.FullName,
+							RepoURL:     r.HTMLURL,
+							PathInRepo:  f.Path,
+							Description: r.Description,
+							UpdatedAt:   r.PushedAt,
+							Private:     r.Private,
+						})
+					}
+					send(progressEvent{
+						Kind:    "scanning",
+						Message: fmt.Sprintf("Scanned %s (%d markdown file%s)", r.FullName, len(batch), plural(len(batch))),
+						Current: n, Total: total,
+						Repo:  r.FullName,
+						Items: batch,
+					})
+				}
+			}()
+		}
+		for _, r := range live {
+			select {
+			case jobs <- r:
+			case <-ctx.Done():
+				close(jobs)
+				wg.Wait()
+				return ctx.Err()
+			}
+		}
+		close(jobs)
+		wg.Wait()
+		return nil
 	}
-	return nil, false, fmt.Errorf("unknown index kind: %s", idx.Kind)
+	return fmt.Errorf("unknown index kind: %s", idx.Kind)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func defaultIndexTitle(t parsedIndexTarget) string {

@@ -181,6 +181,12 @@ export interface MarkdownIndex {
   title: string;
   sourceUrl: string;
   private: boolean;
+  /** Owner-pinned default filename filter. Share-link visitors get
+   * this filter applied on first load (until they pick their own). */
+  defaultFilter?: string;
+  /** GitHub login of the index creator. Used by the frontend to
+   * scope owner-only actions (pin / rename / delete). */
+  createdById?: string;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
@@ -200,6 +206,18 @@ export interface MarkdownIndexItem {
 export interface MarkdownIndexResponse extends MarkdownIndex {
   items: MarkdownIndexItem[];
   truncated?: boolean;
+}
+
+/** A single progress event from the index streaming endpoint. */
+export interface IndexProgressEvent {
+  kind: "meta" | "ready" | "status" | "scanning" | "items" | "done" | "error";
+  message?: string;
+  current?: number;
+  total?: number;
+  repo?: string;
+  items?: MarkdownIndexItem[];
+  truncated?: boolean;
+  error?: string;
 }
 
 export interface PushbackResult {

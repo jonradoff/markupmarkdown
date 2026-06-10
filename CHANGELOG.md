@@ -8,6 +8,45 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Live progress + parallel scanning for index materialization.** Org
+  and user-profile indexes now stream their results via an SSE channel
+  (`GET /api/indexes/:id/stream`) so the user sees "Scanning 47/142
+  repos…" with a per-repo progress bar instead of staring at "Loading…"
+  for 30 seconds while a 150-repo org spider runs. The per-repo
+  fetches fan out across a worker pool of 8 — beamable's ~150 repos
+  now complete in under 10 s instead of 60+. POST `/api/indexes`
+  returns the index meta immediately (no items) so the home-page form
+  navigates straight to the index page, where progress UI takes over.
+  Plain `GET /api/indexes/:id` still materializes synchronously for
+  API consumers and as a fallback if the stream errors.
+- **Filename-filter tabs on index pages.** Save up to 5 case-insensitive
+  substring filters (`claude.md`, `_PRD`, etc.) as named chips along
+  the top of the listing. An "All" chip is always present. Tabs are
+  per-(browser, index) and persisted in localStorage; the last-active
+  tab reopens on return. Each tab shows the match count next to its
+  label. Hit × on a chip to remove it.
+- **Pinned default filter (owner-only).** The index creator can pin one
+  of their tabs (or "All") as the default view for share-link
+  visitors. First-time visitors land on the pinned filter; once they
+  pick their own tab, their localStorage choice takes over. Backed by
+  a new `defaultFilter` field on the Index model + a `defaultFilter`
+  argument on `PATCH /api/indexes/:id`. Owner sees a pin/unpin
+  button on each tab; everyone sees a filled pin icon on the pinned
+  tab.
+- **"Forget" button on docs + indexes.** Hides an item from MY home
+  list without deleting it for everyone. Distinct from Delete (which
+  soft-deletes globally). Backed by a new `hidden_items` collection
+  keyed on `(user_id, kind, item_id)`. For docs, the marker is keyed
+  on the chain root so future revisions of a forgotten chain don't
+  re-surface. Endpoints: `POST /api/documents/:id/forget`,
+  `POST /api/indexes/:id/forget`. listDocuments + listMyIndexes
+  filter against the marker so the action is local to the calling
+  user.
+- **Owner/repo pill on "Your documents" rows.** Each doc entry now
+  carries a `owner/repo` chip next to the title so similarly-named
+  files (PRD.md, README.md, …) are distinguishable at a glance
+  instead of buried in the fine-print path line. GitHub-sourced docs
+  only; uploads stay unchanged.
 - **Markdown indexes — shareable listings of `.md` files anchored to a
   GitHub URL.** Three target shapes are recognized at the home-page
   URL bar:

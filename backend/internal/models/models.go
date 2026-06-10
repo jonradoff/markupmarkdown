@@ -113,9 +113,18 @@ type Index struct {
 	// authenticated access at create-time. Read handlers re-verify
 	// access on every view (same model as Document.Private).
 	Private bool `bson:"private" json:"private"`
+	// DefaultFilter is the case-insensitive filename-filter substring
+	// the creator has pinned as the default view for share-link
+	// visitors. Empty = no pinned filter (visitors see "All"). A
+	// visitor with their own per-(browser, index) tab choice in
+	// localStorage overrides this; only first-time visitors land on
+	// the pinned filter.
+	DefaultFilter string `bson:"default_filter,omitempty" json:"defaultFilter,omitempty"`
 	// CreatedByID is the GitHub login of the creator. Empty for
 	// anonymously-created indexes (only possible for public targets).
-	CreatedByID string     `bson:"created_by_id,omitempty" json:"-"`
+	// Exposed in JSON so the frontend can show "Pin" / "Delete" only
+	// to the creator and let everyone else see who curated the list.
+	CreatedByID string     `bson:"created_by_id,omitempty" json:"createdById,omitempty"`
 	DeletedAt   *time.Time `bson:"deleted_at,omitempty" json:"deletedAt,omitempty"`
 	CreatedAt   time.Time  `bson:"created_at" json:"createdAt"`
 	UpdatedAt   time.Time  `bson:"updated_at" json:"updatedAt"`

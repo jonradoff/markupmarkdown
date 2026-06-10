@@ -98,6 +98,11 @@ export const api = {
     }),
   deleteDocument: (id: string) =>
     req<void>(`/api/documents/${id}`, { method: "DELETE" }),
+  /** Per-user "Forget": hide a doc from MY recent list without
+   * deleting it for everyone. Keyed on the chain root so revisions
+   * of a forgotten chain don't re-surface. */
+  forgetDocument: (id: string) =>
+    req<void>(`/api/documents/${id}/forget`, { method: "POST" }),
   /** Pulls the latest source from GitHub, re-anchors comments where
    * possible, and flips the rest to orphan. */
   syncDocumentSource: (id: string) =>
@@ -234,16 +239,26 @@ export const api = {
    * viewers may see different listings if their repo access differs. */
   getIndex: (id: string) => req<MarkdownIndexResponse>(`/api/indexes/${id}`),
 
-  /** Rename an index. Creator-only (cookie session). */
-  patchIndex: (id: string, title: string) =>
+  /** Patch an index — rename and/or pin a default filter for
+   * share-link visitors. Only the fields supplied are updated.
+   * Creator-only (cookie session). */
+  patchIndex: (
+    id: string,
+    patch: { title?: string; defaultFilter?: string },
+  ) =>
     req<MarkdownIndexResponse>(`/api/indexes/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(patch),
     }),
 
   /** Soft-delete an index. Creator-only. */
   deleteIndex: (id: string) =>
     req<void>(`/api/indexes/${id}`, { method: "DELETE" }),
+
+  /** Per-user "Forget": hide an index from MY home list. The share
+   * link still resolves for anyone who has it. */
+  forgetIndex: (id: string) =>
+    req<void>(`/api/indexes/${id}/forget`, { method: "POST" }),
 
   /** The signed-in user's indexes, newest first. */
   listMyIndexes: () => req<MarkdownIndex[]>("/api/me/indexes"),

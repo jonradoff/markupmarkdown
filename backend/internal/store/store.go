@@ -51,6 +51,7 @@ func (s *Store) Notifications() *mongo.Collection  { return s.db.Collection("not
 func (s *Store) APITokens() *mongo.Collection      { return s.db.Collection("api_tokens") }
 func (s *Store) TokenEvents() *mongo.Collection    { return s.db.Collection("token_events") }
 func (s *Store) Indexes() *mongo.Collection        { return s.db.Collection("indexes") }
+func (s *Store) HiddenItems() *mongo.Collection    { return s.db.Collection("hidden_items") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -101,6 +102,57 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 		// the existing index instead of minting a duplicate.
 		{Keys: bson.D{{Key: "created_by_id", Value: 1}, {Key: "kind", Value: 1}, {Key: "owner", Value: 1}, {Key: "repo", Value: 1}}},
 	})
+	_, _ = s.HiddenItems().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		// Lookup by (user, kind) when filtering listDocuments / listMyIndexes.
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}}},
+		// Toggle / dedupe key — one row per (user, kind, item).
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}, {Key: "item_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+	})
+}
+
+// HideItem marks an item as hidden from the user's personal lists.
+// Idempotent — re-calling for the same (user, kind, item) is a no-op.
+// This is a soft, per-user dismissal: it doesn't soft-delete the
+// underlying doc/index, only removes it from this user's listing.
+func (s *Store) HideItem(ctx context.Context, userID, kind, itemID string) error {
+	now := time.Now().UTC()
+	_, err := s.HiddenItems().UpdateOne(ctx,
+		bson.M{"user_id": userID, "kind": kind, "item_id": itemID},
+		bson.M{"$setOnInsert": bson.M{"created_at": now}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+// UnhideItem clears a "Forget" marker. Used when the user undoes a
+// Forget action (currently not surfaced in the UI but exposed for
+// completeness + potential restore flow).
+func (s *Store) UnhideItem(ctx context.Context, userID, kind, itemID string) error {
+	_, err := s.HiddenItems().DeleteOne(ctx, bson.M{"user_id": userID, "kind": kind, "item_id": itemID})
+	return err
+}
+
+// HiddenItemIDs returns the set of item IDs the user has Forgotten in
+// the given kind ("doc" or "index"). Callers use it to filter their
+// listing query — typically the same query that already pages through
+// the underlying collection.
+func (s *Store) HiddenItemIDs(ctx context.Context, userID, kind string) (map[string]bool, error) {
+	cur, err := s.HiddenItems().Find(ctx, bson.M{"user_id": userID, "kind": kind})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := map[string]bool{}
+	for cur.Next(ctx) {
+		var row struct {
+			ItemID string `bson:"item_id"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out[row.ItemID] = true
+	}
+	return out, nil
 }
 
 // InsertIndex stores a new markdown-index row.
@@ -181,6 +233,24 @@ func (s *Store) SoftDeleteIndex(ctx context.Context, id string) error {
 func (s *Store) UpdateIndexTitle(ctx context.Context, id, title string) error {
 	_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
 		"$set": bson.M{"title": title, "updated_at": time.Now().UTC()},
+	})
+	return err
+}
+
+// UpdateIndexDefaultFilter pins (or clears, when filter == "") the
+// default filename filter shown to share-link visitors. Owner-only
+// — enforced at the handler.
+func (s *Store) UpdateIndexDefaultFilter(ctx context.Context, id, filter string) error {
+	now := time.Now().UTC()
+	if filter == "" {
+		_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+			"$set":   bson.M{"updated_at": now},
+			"$unset": bson.M{"default_filter": ""},
+		})
+		return err
+	}
+	_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set": bson.M{"default_filter": filter, "updated_at": now},
 	})
 	return err
 }
