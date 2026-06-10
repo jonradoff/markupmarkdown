@@ -256,6 +256,13 @@ export default function DocumentPage() {
     const usingEditor = editing && editorRef.current;
     if (!usingEditor && !content) return;
     const sbBox = sidebar.getBoundingClientRect();
+    // The anchored-cards container lives BELOW the sticky header +
+    // nav bar in the sidebar's DOM flow, so its origin in
+    // scroll-content coords is offset by (topHeaderH + navBarH).
+    // Subtracting that here makes a card with desiredTop=N land at
+    // viewport y = highlightTop exactly, instead of being pushed
+    // down by the sticky-headers' combined height.
+    const headerOffset = topHeaderH + navBarH;
     const items = visibleComments
       .map((c) => {
         let top: number | null = null;
@@ -275,7 +282,7 @@ export default function DocumentPage() {
         const height = wrapper?.offsetHeight ?? 120;
         return {
           id: c.id,
-          desiredTop: top - sbBox.top + sidebar.scrollTop,
+          desiredTop: top - sbBox.top + sidebar.scrollTop - headerOffset,
           height,
         };
       })
@@ -290,7 +297,11 @@ export default function DocumentPage() {
     // viewport, but the anchored container's coordinate space is
     // sidebar-local — so we just add enough top padding for the bars
     // to clear the first card.
-    const minTop = topHeaderH + navBarH + 8;
+    // Cards must stay below the sticky header + nav bar visually
+    // (those overlay the top of the sidebar). In the corrected
+    // coordinate system the threshold is scrollTop + small padding —
+    // the sticky-header offset is already baked into desiredTop.
+    const minTop = sidebar.scrollTop + 8;
     const padded = items.map((it) =>
       it.desiredTop < minTop ? { ...it, desiredTop: minTop } : it
     );

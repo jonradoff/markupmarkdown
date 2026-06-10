@@ -152,6 +152,18 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
       markdown({ base: markdownLanguage, codeLanguages: [] }),
       search({ top: true }),
       EditorView.lineWrapping,
+      // Disable CodeMirror's internal scroll viewport — the parent
+      // column scrolls the page instead, so the user sees one
+      // scrollbar instead of a scroll-in-scroll. As a bonus, every
+      // line is "in view" from CodeMirror's perspective, so
+      // coordsAtPos always returns a real rect and the comment-
+      // anchored sidebar cards line up exactly with the highlighted
+      // source row.
+      EditorView.theme({
+        "&": { height: "auto", maxHeight: "none" },
+        ".cm-scroller": { overflow: "visible" },
+        ".cm-content": { padding: "12px 0" },
+      }),
       // Notify the parent on scroll / geometry change so the
       // anchored comment-card layout in the sidebar reflows.
       EditorView.updateListener.of((u) => {
@@ -323,7 +335,7 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
       </div>
 
       <div className={`grid gap-3 ${showPreview ? "md:grid-cols-2" : "grid-cols-1"}`}>
-        <div className="border border-rule rounded-md overflow-hidden min-h-[60vh] bg-card">
+        <div className="border border-rule rounded-md bg-card">
           <CodeMirror
             ref={cmRef}
             value={content}
@@ -346,12 +358,11 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
             }}
             theme={isDark ? oneDark : "light"}
             placeholder="Edit Markdown…"
-            height="60vh"
             style={{ fontSize: 14 }}
           />
         </div>
         {showPreview && (
-          <div className="border border-rule rounded-md p-3 bg-card overflow-auto min-h-[60vh]">
+          <div className="border border-rule rounded-md p-3 bg-card">
             <MarkdownRender
               content={content}
               baseUrl={baseURLForDoc(sourceUrl)}
