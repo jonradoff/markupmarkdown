@@ -57,6 +57,8 @@ export interface RevisionMeta {
 export interface ParentSummary {
   id: string;
   title: string;
+  /** 1-based structural position in the revision chain (root = 1). */
+  revisionIndex?: number;
 }
 
 export interface RevisionSummary {
@@ -64,6 +66,7 @@ export interface RevisionSummary {
   title: string;
   createdAt: string;
   revisionMeta?: RevisionMeta;
+  revisionIndex?: number;
 }
 
 export interface MdDocument {
@@ -96,6 +99,13 @@ export interface MdDocument {
    * because syncing happens on the root (a child revision is AI-
    * diverged from upstream by design). */
   rootDocument?: ParentSummary;
+  /** 1-based structural position of this doc in its revision chain
+   * (root = 1). Counts soft-deleted ancestors so numbering stays
+   * stable as docs come and go. */
+  revisionIndex?: number;
+  /** Total nodes in the chain — root plus every descendant via the
+   * most-recent-child walk. Renders as "v2 of 4" on the toolbar. */
+  revisionTotal?: number;
   previouslyViewedAt?: string;
   createdAt: string;
   updatedAt: string;

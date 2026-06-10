@@ -42,12 +42,41 @@ export default function DocumentToolbar({
   );
   return (
     <>
-      {/* Parent link (if this doc was AI-revised from another) */}
+      {/* Revision-chain breadcrumb. The vN labels make it obvious
+          which version you're backing up to, even when every node
+          shares the same title (the common case for AI revisions of
+          a single source file). */}
       {doc.parent && (
-        <div className="text-xs text-muted mb-1">
-          ← Revised from{" "}
+        <div className="text-xs text-muted mb-1 flex items-center gap-2 flex-wrap">
           <Link to={`/d/${doc.parent.id}`} className="text-accent hover:underline">
-            {doc.parent.title}
+            ← {doc.parent.revisionIndex ? `v${doc.parent.revisionIndex}` : "Previous version"}
+          </Link>
+          {doc.revisionIndex && (
+            <span className="text-faint">
+              · Viewing v{doc.revisionIndex}
+              {doc.revisionTotal && doc.revisionTotal > doc.revisionIndex
+                ? ` of ${doc.revisionTotal}`
+                : ""}
+            </span>
+          )}
+          {doc.latestDescendant && doc.latestDescendant.id !== doc.id && (
+            <Link
+              to={`/d/${doc.latestDescendant.id}`}
+              className="text-accent hover:underline"
+            >
+              · Latest: v{doc.latestDescendant.revisionIndex ?? "?"} →
+            </Link>
+          )}
+        </div>
+      )}
+      {!doc.parent && doc.latestDescendant && doc.latestDescendant.id !== doc.id && (
+        <div className="text-xs text-muted mb-1 flex items-center gap-2">
+          <span className="text-faint">Viewing v1 (original)</span>
+          <Link
+            to={`/d/${doc.latestDescendant.id}`}
+            className="text-accent hover:underline"
+          >
+            · Latest: v{doc.latestDescendant.revisionIndex ?? "?"} →
           </Link>
         </div>
       )}
@@ -154,11 +183,11 @@ export default function DocumentToolbar({
 
       {doc.children && doc.children.length > 0 && (
         <div className="text-xs text-muted mb-6 flex items-center gap-2 flex-wrap">
-          Revisions:
+          Direct revisions:
           {doc.children.map((c, i) => (
             <span key={c.id} className="inline-flex items-center gap-1">
               <Link to={`/d/${c.id}`} className="text-accent hover:underline">
-                v{i + 2}
+                v{c.revisionIndex ?? (doc.revisionIndex ?? 1) + i + 1}
               </Link>
               {c.revisionMeta?.generatedBy && (
                 <span className="text-faint">by {c.revisionMeta.generatedBy}</span>

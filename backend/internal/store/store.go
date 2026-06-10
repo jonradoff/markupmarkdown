@@ -514,8 +514,30 @@ func (s *Store) DeleteAnthropicKey(ctx context.Context, userID string) error {
 
 // Document revisions
 
-// ListChildren returns documents whose parent is the given doc, oldest first.
+// ListChildren returns non-deleted documents whose parent is the given
+// doc, oldest first. Soft-deleted children stay hidden — callers that
+// need to surface deleted nodes (Trash, audit) query directly.
 func (s *Store) ListChildren(ctx context.Context, parentID string) ([]models.Document, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
+	cur, err := s.Documents().Find(ctx, bson.M{
+		"parent_id":  parentID,
+		"deleted_at": bson.M{"$exists": false},
+	}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []models.Document
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListChildrenRaw returns every child of parentID regardless of soft-
+// delete state. Used when we need to walk the structural tree (e.g.,
+// hard-purge a chain).
+func (s *Store) ListChildrenRaw(ctx context.Context, parentID string) ([]models.Document, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
 	cur, err := s.Documents().Find(ctx, bson.M{"parent_id": parentID}, opts)
 	if err != nil {
@@ -534,12 +556,16 @@ func (s *Store) ListChildren(ctx context.Context, parentID string) ([]models.Doc
 // Guards against cycles defensively. Used by the source-drift check so
 // child revisions report drift relative to the original source, not
 // against whichever GitHub state happens to match the AI-revised text.
+//
+// Walks via GetDocumentRaw so a soft-deleted ancestor doesn't sever
+// the chain — alive descendants still belong to their original tree
+// and should dedupe accordingly in listDocuments.
 func (s *Store) RootDocument(ctx context.Context, id string) (*models.Document, error) {
 	seen := map[string]bool{}
 	current := id
 	for !seen[current] {
 		seen[current] = true
-		d, err := s.GetDocument(ctx, current)
+		d, err := s.GetDocumentRaw(ctx, current)
 		if err != nil {
 			return nil, err
 		}
@@ -553,21 +579,58 @@ func (s *Store) RootDocument(ctx context.Context, id string) (*models.Document, 
 	}
 	// Cycle — return whatever we last loaded so callers still get
 	// something usable.
-	return s.GetDocument(ctx, current)
+	return s.GetDocumentRaw(ctx, current)
 }
 
-// LatestDescendant walks the revision tree starting at docID, always picking
-// the most recently created child, until it hits a leaf. Returns nil if the
-// given doc has no children. Guards against cycles defensively.
+// AncestorChain returns every ancestor of id starting at the root
+// (inclusive) and ending at the doc just before id (exclusive of id
+// itself). Useful for computing version indices ("v3 of 4") and for
+// rendering breadcrumbs that show which earlier revision a doc was
+// derived from. Walks via GetDocumentRaw so deleted ancestors still
+// appear in the chain (the index would otherwise jump).
+func (s *Store) AncestorChain(ctx context.Context, id string) ([]models.Document, error) {
+	seen := map[string]bool{}
+	var chain []models.Document
+	current := id
+	for !seen[current] {
+		seen[current] = true
+		d, err := s.GetDocumentRaw(ctx, current)
+		if err != nil {
+			return nil, err
+		}
+		if d == nil || d.ParentID == "" {
+			break
+		}
+		parent, err := s.GetDocumentRaw(ctx, d.ParentID)
+		if err != nil {
+			return nil, err
+		}
+		if parent == nil {
+			break
+		}
+		chain = append([]models.Document{*parent}, chain...)
+		current = parent.ID
+	}
+	return chain, nil
+}
+
+// LatestDescendant walks the revision tree from docID via the most-
+// recently-created child edge and returns the deepest ALIVE descendant
+// it finds. Walks via ListChildrenRaw (including soft-deleted) so a
+// deleted intermediate node doesn't sever the path to an alive
+// descendant beyond it; only the returned doc is required to be alive.
+//
+// Returns nil when docID has no descendants at all, or when every
+// descendant is soft-deleted. Guards against cycles defensively.
 func (s *Store) LatestDescendant(ctx context.Context, docID string) (*models.Document, error) {
 	current := docID
-	var latest *models.Document
+	var bestAlive *models.Document
 	seen := map[string]bool{}
 	for !seen[current] {
 		seen[current] = true
-		children, err := s.ListChildren(ctx, current)
+		children, err := s.ListChildrenRaw(ctx, current)
 		if err != nil {
-			return latest, err
+			return bestAlive, err
 		}
 		if len(children) == 0 {
 			break
@@ -578,11 +641,13 @@ func (s *Store) LatestDescendant(ctx context.Context, docID string) (*models.Doc
 				next = children[i]
 			}
 		}
-		copied := next
-		latest = &copied
+		if next.DeletedAt == nil {
+			copied := next
+			bestAlive = &copied
+		}
 		current = next.ID
 	}
-	return latest, nil
+	return bestAlive, nil
 }
 
 // Users + Sessions
@@ -687,6 +752,22 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*models.Document, e
 		"_id":        id,
 		"deleted_at": bson.M{"$exists": false},
 	}).Decode(&d)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// GetDocumentRaw returns a doc by ID ignoring the soft-delete flag.
+// Used by revision-chain walks (RootDocument / LatestDescendant) so a
+// deleted ancestor or descendant doesn't sever the chain — the live
+// nodes still need to know which tree they belong to.
+func (s *Store) GetDocumentRaw(ctx context.Context, id string) (*models.Document, error) {
+	var d models.Document
+	err := s.Documents().FindOne(ctx, bson.M{"_id": id}).Decode(&d)
 	if err == mongo.ErrNoDocuments {
 		return nil, nil
 	}

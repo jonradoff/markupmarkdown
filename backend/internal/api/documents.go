@@ -95,10 +95,20 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 		seenRoot[root.ID] = true
 
-		// Walk to leaf so the entry surfaces the current state.
+		// Walk to leaf so the entry surfaces the current state. If the
+		// "root" itself is soft-deleted (Jon's case: deleted the
+		// original after AI-revising), substitute the deepest alive
+		// descendant so we never list a deleted leaf that 404s on
+		// click.
 		leaf := root
-		if descendant, err := a.store.LatestDescendant(r.Context(), root.ID); err == nil && descendant != nil {
+		descendant, _ := a.store.LatestDescendant(r.Context(), root.ID)
+		if descendant != nil {
 			leaf = descendant
+		} else if leaf.DeletedAt != nil {
+			// No alive descendants AND root is deleted → drop the
+			// entire chain from the list. The user's gesture (delete
+			// every revision) wants this gone.
+			continue
 		}
 
 		// Access check on the leaf (private docs the viewer lost
@@ -294,6 +304,14 @@ type documentResponse struct {
 	// it to render an "Open original" affordance on the source-drift
 	// banner (you sync the root, not the AI-revised child).
 	RootDocument *parentSummary `json:"rootDocument,omitempty"`
+	// RevisionIndex is the 1-based structural position of this doc in
+	// its chain (root = v1). Counts soft-deleted ancestors so the
+	// numbering stays stable as docs come and go.
+	RevisionIndex int `json:"revisionIndex,omitempty"`
+	// RevisionTotal is the total number of nodes in the chain — root
+	// plus every descendant via the most-recent-child walk. Used by
+	// the toolbar to render "v3 of 5".
+	RevisionTotal int `json:"revisionTotal,omitempty"`
 	// PreviouslyViewedAt is the timestamp of the requester's *previous*
 	// open of this doc, before this response. The frontend uses this to
 	// mark any comment whose updatedAt is newer as "unread". RFC3339 UTC.
@@ -303,13 +321,19 @@ type documentResponse struct {
 type parentSummary struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// RevisionIndex is the parent's 1-based position in the
+	// structural chain (root = v1). Surfaced so the doc-page
+	// breadcrumb can say "← Revised from v1" instead of repeating
+	// the same filename twice.
+	RevisionIndex int `json:"revisionIndex,omitempty"`
 }
 
 type revisionSummary struct {
-	ID          string                `json:"id"`
-	Title       string                `json:"title"`
-	CreatedAt   time.Time             `json:"createdAt"`
-	RevisionMeta *models.RevisionMeta `json:"revisionMeta,omitempty"`
+	ID            string               `json:"id"`
+	Title         string               `json:"title"`
+	CreatedAt     time.Time            `json:"createdAt"`
+	RevisionMeta  *models.RevisionMeta `json:"revisionMeta,omitempty"`
+	RevisionIndex int                  `json:"revisionIndex,omitempty"`
 }
 
 func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
@@ -354,23 +378,50 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 		}
 		a.enqueueView(doc.ID, u.ID)
 	}
+	// Build the structural ancestor chain so revisionIndex / parent's
+	// revisionIndex are accurate. Walks via raw lookups so deleted
+	// ancestors don't break the numbering — v3 is always v3 no matter
+	// what's been deleted in the chain above it.
+	ancestors, _ := a.store.AncestorChain(r.Context(), doc.ID)
+	resp.RevisionIndex = len(ancestors) + 1
 	if doc.ParentID != "" {
 		if parent, _ := a.store.GetDocument(r.Context(), doc.ParentID); parent != nil {
-			resp.Parent = &parentSummary{ID: parent.ID, Title: parent.Title}
+			resp.Parent = &parentSummary{
+				ID:            parent.ID,
+				Title:         parent.Title,
+				RevisionIndex: len(ancestors), // parent is at depth N-1
+			}
 		}
 	}
 	if children, _ := a.store.ListChildren(r.Context(), doc.ID); len(children) > 0 {
-		for _, c := range children {
+		for i, c := range children {
 			resp.Children = append(resp.Children, revisionSummary{
 				ID:           c.ID,
 				Title:        c.Title,
 				CreatedAt:    c.CreatedAt,
 				RevisionMeta: c.RevisionMeta,
+				// Children sit immediately below this doc, so the
+				// 1-based vN is resp.RevisionIndex + 1 + ordinal.
+				// (Branching is unusual; for linear chains this is
+				// the simple sibling index.)
+				RevisionIndex: resp.RevisionIndex + i + 1,
 			})
 		}
 		if latest, _ := a.store.LatestDescendant(r.Context(), doc.ID); latest != nil && latest.ID != doc.ID {
-			resp.LatestDescendant = &parentSummary{ID: latest.ID, Title: latest.Title}
+			latestAncestors, _ := a.store.AncestorChain(r.Context(), latest.ID)
+			resp.LatestDescendant = &parentSummary{
+				ID:            latest.ID,
+				Title:         latest.Title,
+				RevisionIndex: len(latestAncestors) + 1,
+			}
 		}
+	}
+	// RevisionTotal: depth of the deepest descendant in the alive
+	// chain (using the same walk listDocuments uses), so the toolbar
+	// can render "v2 of 4" without re-walking on the client.
+	resp.RevisionTotal = resp.RevisionIndex
+	if resp.LatestDescendant != nil && resp.LatestDescendant.RevisionIndex > resp.RevisionTotal {
+		resp.RevisionTotal = resp.LatestDescendant.RevisionIndex
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
