@@ -765,9 +765,26 @@ export default function DocumentPage() {
 
   async function handleResolve(c: Comment) {
     const author = user?.name || user?.login || getAuthor() || "Anonymous";
+    // Compute the next visible inline comment BEFORE the mutation so
+    // the index doesn't shift if the active filter (e.g., "open")
+    // would hide c after it's resolved. If there's nowhere to go
+    // (single visible comment, or c isn't in the visible list at
+    // all), advancing is a no-op.
+    let nextId: string | null = null;
+    if (visibleComments.length > 1) {
+      const idx = visibleComments.findIndex((x) => x.id === c.id);
+      if (idx >= 0) {
+        const candidate = visibleComments[(idx + 1) % visibleComments.length];
+        if (candidate && candidate.id !== c.id) nextId = candidate.id;
+      }
+    }
     try {
       const updated = await api.resolveComment(c.id, author);
       applyMutation((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+      // Auto-advance to the next comment so a "Mark as Done" click
+      // feels like progress through the queue (same gesture as
+      // clicking Next).
+      if (nextId) setActiveId(nextId);
     } catch (err) {
       toastError(err, "Couldn't mark that comment done.");
     }
