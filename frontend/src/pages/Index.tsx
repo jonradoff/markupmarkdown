@@ -7,7 +7,6 @@ import { useToast, toastMessageFor } from "../components/Toast";
 import { useDialog } from "../components/Dialogs";
 import { useAuth } from "../auth";
 import { formatRelative } from "../utils/format";
-import { canonicalIndexPath, rewriteToCanonical } from "../utils/canonicalUrl";
 
 // IndexPage renders a single markdown-index (repo / user / org).
 // Clicking a row ingests the corresponding .md file via the existing
@@ -142,15 +141,26 @@ export default function IndexPage() {
   // ReadableStream rather than EventSource so we get the same cookie
   // session the rest of the app uses (EventSource ignores credentials
   // in some browsers).
-  const reload = useCallback(() => {
+  //
+  // `force` opens the stream with ?refresh=1 — Backed by an explicit
+  // Refresh button. Without it, the backend serves the cached items
+  // for instant subsequent visits and only re-spiders GitHub when
+  // the user explicitly asks.
+  const reload = useCallback((force = false) => {
     if (!id) return undefined;
     setError(null);
     setItems([]);
     setStreamErr(null);
+    setRecentRepos([]);
     truncatedRef.current = false;
-    setProgress({ status: "Loading index…", current: 0, total: 0, scanning: true });
+    setProgress({
+      status: force ? "Refreshing from GitHub…" : "Loading index…",
+      current: 0,
+      total: 0,
+      scanning: true,
+    });
     const controller = new AbortController();
-    streamIndexItems(id, controller.signal, (ev) => {
+    streamIndexItems(id, force, controller.signal, (ev) => {
       switch (ev.kind) {
         case "meta": {
           // Backend sends the full Index meta as the first event.
@@ -158,10 +168,6 @@ export default function IndexPage() {
           setIndex({ ...meta, items: [] });
           setTitleDraft(meta.title);
           document.title = `${meta.title} · markupmarkdown`;
-          // Replace /i/:slug in the address bar with /:owner or
-          // /:owner/:repo so the URL reads as the human pasted it.
-          const canonical = canonicalIndexPath(meta);
-          if (canonical) rewriteToCanonical(canonical);
           break;
         }
         case "ready":
@@ -203,23 +209,32 @@ export default function IndexPage() {
           setProgress((p) => ({ ...p, scanning: false }));
           break;
       }
-    }).catch((err) => {
-      if (controller.signal.aborted) return;
-      // 401 / 404 from the stream — fall back to the synchronous GET
-      // so the user sees the structured APIError page instead of a
-      // blank stream-error toast.
-      api.getIndex(id)
-        .then((res) => {
-          setIndex(res);
-          setItems(res.items);
-          setTitleDraft(res.title);
-          setProgress((p) => ({ ...p, scanning: false, status: "Scan complete" }));
-        })
-        .catch((gErr) => {
-          setError(gErr instanceof APIError ? gErr : new APIError(err instanceof Error ? err.message : "Stream interrupted."));
-          setProgress((p) => ({ ...p, scanning: false }));
-        });
-    });
+    })
+      .then(() => {
+        // Stream closed cleanly. If a "done" event never arrived
+        // (proxy mid-flight drop, connection reset), this is the
+        // belt-and-suspenders that flips scanning off so the
+        // progress banner doesn't spin forever.
+        if (controller.signal.aborted) return;
+        setProgress((p) => (p.scanning ? { ...p, scanning: false, status: "Scan complete" } : p));
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        // 401 / 404 from the stream — fall back to the synchronous GET
+        // so the user sees the structured APIError page instead of a
+        // blank stream-error toast.
+        api.getIndex(id)
+          .then((res) => {
+            setIndex(res);
+            setItems(res.items);
+            setTitleDraft(res.title);
+            setProgress((p) => ({ ...p, scanning: false, status: "Scan complete" }));
+          })
+          .catch((gErr) => {
+            setError(gErr instanceof APIError ? gErr : new APIError(err instanceof Error ? err.message : "Stream interrupted."));
+            setProgress((p) => ({ ...p, scanning: false }));
+          });
+      });
     return () => controller.abort();
   }, [id]);
 
@@ -406,6 +421,18 @@ export default function IndexPage() {
           </button>
         )}
         <div className="flex items-center gap-3 text-sm shrink-0">
+          <button
+            onClick={() => reload(true)}
+            className="text-muted hover:text-ink disabled:opacity-50"
+            disabled={progress.scanning}
+            title="Re-scan GitHub for the latest markdown files (otherwise cached)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+          </button>
           <button onClick={shareLink} className="text-muted hover:text-ink" title="Copy share link">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="18" cy="5" r="3" />
@@ -754,10 +781,12 @@ function matchesFilter(it: MarkdownIndexItem, filter: string): boolean {
 // when the component unmounts.
 async function streamIndexItems(
   id: string,
+  force: boolean,
   signal: AbortSignal,
   onEvent: (ev: IndexProgressEvent & { meta?: MarkdownIndexResponse }) => void
 ) {
-  const res = await fetch(`/api/indexes/${id}/stream`, {
+  const qs = force ? "?refresh=1" : "";
+  const res = await fetch(`/api/indexes/${id}/stream${qs}`, {
     signal,
     credentials: "same-origin",
     headers: { Accept: "text/event-stream" },

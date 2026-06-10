@@ -52,6 +52,7 @@ func (s *Store) APITokens() *mongo.Collection      { return s.db.Collection("api
 func (s *Store) TokenEvents() *mongo.Collection    { return s.db.Collection("token_events") }
 func (s *Store) Indexes() *mongo.Collection        { return s.db.Collection("indexes") }
 func (s *Store) HiddenItems() *mongo.Collection    { return s.db.Collection("hidden_items") }
+func (s *Store) IndexItems() *mongo.Collection     { return s.db.Collection("index_items") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -234,6 +235,53 @@ func (s *Store) UpdateIndexTitle(ctx context.Context, id, title string) error {
 	_, err := s.Indexes().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
 		"$set": bson.M{"title": title, "updated_at": time.Now().UTC()},
 	})
+	return err
+}
+
+// CachedIndexItems is the materialized listing we stash after a
+// successful scan so the next visit can render immediately instead of
+// re-running the full GitHub spider. Keyed by index id (one row per
+// index). The cache is shared across viewers; private items are
+// filtered at serve-time by the handler when the viewer isn't the
+// creator who originally scanned them.
+type CachedIndexItems struct {
+	IndexID     string    `bson:"_id"`
+	ItemsJSON   []byte    `bson:"items_json"`
+	Truncated   bool      `bson:"truncated"`
+	CachedAt    time.Time `bson:"cached_at"`
+	ViewerLogin string    `bson:"viewer_login,omitempty"`
+}
+
+// GetCachedIndexItems returns the most recent cached materialization
+// for an index, or nil when the index hasn't been scanned yet.
+func (s *Store) GetCachedIndexItems(ctx context.Context, indexID string) (*CachedIndexItems, error) {
+	var out CachedIndexItems
+	if err := s.IndexItems().FindOne(ctx, bson.M{"_id": indexID}).Decode(&out); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetCachedIndexItems upserts the items cache for an index. itemsJSON
+// is the JSON-encoded items array — we store as bytes rather than a
+// nested bson array so the read path doesn't have to round-trip every
+// item through bson decoding for every view (a 500-item org listing
+// would otherwise be expensive).
+func (s *Store) SetCachedIndexItems(ctx context.Context, indexID string, itemsJSON []byte, truncated bool, viewerLogin string) error {
+	now := time.Now().UTC()
+	_, err := s.IndexItems().UpdateOne(ctx,
+		bson.M{"_id": indexID},
+		bson.M{"$set": bson.M{
+			"items_json":   itemsJSON,
+			"truncated":    truncated,
+			"cached_at":    now,
+			"viewer_login": viewerLogin,
+		}},
+		options.UpdateOne().SetUpsert(true),
+	)
 	return err
 }
 

@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Index items are cached server-side; explicit Refresh button.** First
+  view of an index does a live GitHub spider; subsequent visits load
+  from a `index_items` Mongo cache (one row per index, items stored
+  as JSON bytes for fast read). A new circular-arrow Refresh button in
+  the index header re-spiders on demand and replaces the cache.
+  Private items are filtered to the original scanner's audience so a
+  cached org listing never leaks private file names to other viewers.
+  Stops the "re-index every time I open the page" surprise.
 - **Human-readable URL system.** The SPA now accepts three URL shapes
   as first-class addresses for GitHub markdown:
   - `/owner/repo/blob/ref/path` → individual document (auto-clones if

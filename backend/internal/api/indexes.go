@@ -389,12 +389,35 @@ func (a *API) patchIndex(w http.ResponseWriter, r *http.Request) {
 	a.respondIndexWithItems(w, r, idx)
 }
 
-// respondIndexWithItems performs the live GitHub fetch for an index's
-// items and writes the combined response. Centralized so create+get
-// share the materialization path. Errors fetching items don't fail
-// the response — they're surfaced via the standard fetch-error
-// machinery, but the caller still gets the stored metadata.
+// respondIndexWithItems writes the index meta + items. By default it
+// serves from the cache (so the second visit is instant); if the
+// cache is empty, it performs a one-shot materialization, persists,
+// and returns the freshly computed list. Cached items are filtered
+// to drop private entries for viewers who don't share access with
+// the original scanner.
 func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx *models.Index) {
+	user := a.currentUser(r)
+	cached, _ := a.store.GetCachedIndexItems(r.Context(), idx.ID)
+	if cached != nil && len(cached.ItemsJSON) > 0 {
+		var items []indexItem
+		if err := json.Unmarshal(cached.ItemsJSON, &items); err == nil {
+			items = filterPrivateForViewer(items, user, cached.ViewerLogin)
+			writeJSON(w, http.StatusOK, indexResponse{
+				Index:     *idx,
+				Items:     items,
+				Truncated: cached.Truncated,
+			})
+			return
+		}
+		// Bad cache row — fall through to fresh scan.
+	}
+	a.materializeAndRespond(w, r, idx)
+}
+
+// materializeAndRespond runs a fresh scan synchronously and persists
+// the result to the cache so the next visit is fast. Used as the
+// fallback when no cache row exists yet.
+func (a *API) materializeAndRespond(w http.ResponseWriter, r *http.Request, idx *models.Index) {
 	user := a.currentUser(r)
 	token := ""
 	viewerLogin := ""
@@ -402,9 +425,6 @@ func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx 
 		token = user.AccessToken
 		viewerLogin = user.Login
 	}
-	// User/org indexes can take 30+ s when the org has many repos; bump
-	// the timeout accordingly. Repo indexes are bounded by one tree
-	// fetch and stay under 10 s.
 	timeout := 60 * time.Second
 	if idx.Kind == models.IndexKindRepo {
 		timeout = 15 * time.Second
@@ -412,8 +432,6 @@ func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	// For non-streaming callers we collect the events into a single
-	// payload. The streaming variant emits them as SSE in real time.
 	events := make(chan progressEvent, 64)
 	var (
 		items     []indexItem
@@ -441,18 +459,41 @@ func (a *API) respondIndexWithItems(w http.ResponseWriter, r *http.Request, idx 
 	if items == nil {
 		items = []indexItem{}
 	}
-	// Stable sort so the listing isn't reshuffled by goroutine timing.
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Repo != items[j].Repo {
 			return items[i].Repo < items[j].Repo
 		}
 		return items[i].PathInRepo < items[j].PathInRepo
 	})
+	// Persist for next visit.
+	if blob, mErr := json.Marshal(items); mErr == nil {
+		_ = a.store.SetCachedIndexItems(r.Context(), idx.ID, blob, truncated, viewerLogin)
+	}
 	writeJSON(w, http.StatusOK, indexResponse{
 		Index:     *idx,
 		Items:     items,
 		Truncated: truncated,
 	})
+}
+
+// filterPrivateForViewer drops items marked Private when the current
+// viewer isn't the user whose token originally scanned them. Without
+// this, a cached org listing could leak private file names to viewers
+// who never had access. Items without a Private flag are kept (the
+// repo-index path doesn't emit per-item privacy, so it's trivially
+// visible only if the index itself is accessible).
+func filterPrivateForViewer(items []indexItem, viewer *models.User, scannerLogin string) []indexItem {
+	if viewer != nil && scannerLogin != "" && strings.EqualFold(viewer.Login, scannerLogin) {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		if it.Private {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // streamIndexItems implements GET /api/indexes/:id/stream. Emits
@@ -495,6 +536,45 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 
+	emit := func(kind string, payload any) {
+		data, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, data)
+		flusher.Flush()
+	}
+	// First event is the index meta so the frontend can render
+	// title / source / private-flag without a separate round trip.
+	emit("meta", idx)
+
+	// Cache-first: unless ?refresh=1, serve the persisted items as a
+	// single "items" event and short-circuit. Re-running a 150-repo
+	// org scan on every visit was both slow AND a needless GitHub
+	// rate-limit burn.
+	wantRefresh := r.URL.Query().Get("refresh") == "1"
+	if !wantRefresh {
+		if cached, _ := a.store.GetCachedIndexItems(r.Context(), idx.ID); cached != nil && len(cached.ItemsJSON) > 0 {
+			var items []indexItem
+			if err := json.Unmarshal(cached.ItemsJSON, &items); err == nil {
+				items = filterPrivateForViewer(items, user, cached.ViewerLogin)
+				emit("items", progressEvent{
+					Kind:      "items",
+					Items:     items,
+					Truncated: cached.Truncated,
+					Message:   "Loaded from cache",
+				})
+				emit("done", map[string]any{
+					"ok":       true,
+					"cached":   true,
+					"cachedAt": cached.CachedAt.UTC().Format(time.RFC3339),
+				})
+				return
+			}
+		}
+	}
+
+	// Then a "ready" so the UI can swap "Loading…" for "Starting scan…"
+	// before the first GitHub round-trip lands.
+	emit("ready", map[string]any{"kind": idx.Kind})
+
 	token := ""
 	viewerLogin := ""
 	if user != nil {
@@ -509,22 +589,17 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	events := make(chan progressEvent, 64)
-	done := make(chan error, 1)
+	doneCh := make(chan error, 1)
 	go func() {
-		done <- materializeIndexStreaming(ctx, idx, token, viewerLogin, events)
+		doneCh <- materializeIndexStreaming(ctx, idx, token, viewerLogin, events)
 	}()
 
-	emit := func(kind string, payload any) {
-		data, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, data)
-		flusher.Flush()
-	}
-	// First event is the index meta so the frontend can render
-	// title / source / private-flag without a separate round trip.
-	emit("meta", idx)
-	// Then a "ready" so the UI can swap "Loading…" for "Starting scan…"
-	// before the first GitHub round-trip lands.
-	emit("ready", map[string]any{"kind": idx.Kind})
+	// Accumulate the items the materializer emits so we can persist a
+	// cache row when the scan completes. Without this, the *streaming*
+	// path would never populate the cache and every Refresh would scan
+	// anew even when nothing has changed upstream.
+	var accumulated []indexItem
+	var accumulatedTrunc bool
 
 	// Heartbeat every 10s so proxies don't time out an in-flight scan.
 	hb := time.NewTicker(10 * time.Second)
@@ -534,13 +609,24 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				err := <-done
+				err := <-doneCh
 				if err != nil {
 					emit("error", map[string]string{"message": err.Error()})
 				} else {
+					// Persist the freshly-scanned items so the next
+					// visit can serve from cache.
+					if blob, mErr := json.Marshal(accumulated); mErr == nil {
+						_ = a.store.SetCachedIndexItems(r.Context(), idx.ID, blob, accumulatedTrunc, viewerLogin)
+					}
 					emit("done", map[string]bool{"ok": true})
 				}
 				return
+			}
+			if len(ev.Items) > 0 {
+				accumulated = append(accumulated, ev.Items...)
+			}
+			if ev.Truncated {
+				accumulatedTrunc = true
 			}
 			emit(ev.Kind, ev)
 		case <-hb.C:
