@@ -94,6 +94,17 @@ type RevisionMeta struct {
 	GeneratedBy       string    `bson:"generated_by" json:"generatedBy"` // display name
 	GeneratedByID     string    `bson:"generated_by_id,omitempty" json:"-"`
 	GeneratedAt       time.Time `bson:"generated_at" json:"generatedAt"`
+	// ActorKind distinguishes a human-authored revision (manual edit
+	// from the web UI, or Revise with AI from a cookie session) from
+	// an agent-authored revision (any write through an MCP / REST
+	// Bearer token). Mirrors Comment.ActorKind so the frontend can
+	// surface the same bot badge on revisions that it already shows
+	// on comments.
+	ActorKind ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
+	// TokenID identifies the API token the agent revision was written
+	// under. The display name (GeneratedBy) is also written so
+	// non-token readers still see a sensible label.
+	TokenID string `bson:"token_id,omitempty" json:"-"`
 	// AncestorSourceSHA is the source_sha of the parent at the moment the
 	// revision was generated. Empty for revisions created before the
 	// merge engine existed.

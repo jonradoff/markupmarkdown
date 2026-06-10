@@ -34,15 +34,41 @@ type API interface {
 	CreateComment(ctx context.Context, userID, docID, body, quotedText string, occurrence int, tokenID, agentLabel string) (*models.Comment, error)
 	ReplyToComment(ctx context.Context, userID, commentID, body, tokenID, agentLabel string) (*models.Comment, error)
 	ResolveComment(ctx context.Context, userID, commentID string, reopen bool) (*models.Comment, error)
+	// DeleteComment removes a comment authored by the requesting
+	// identity (or by an agent token owned by the user). Mirrors the
+	// REST require-mine guard.
+	DeleteComment(ctx context.Context, userID, commentID string) error
+	// PatchCommentAnchor re-anchors a comment manually. opts is one of
+	// {start,end,exact} (inline) or {docLevel: true} (pin without
+	// inline highlight). Mirrors PATCH /api/comments/:id/anchor.
+	PatchCommentAnchor(ctx context.Context, userID, commentID string, opts CommentAnchorOpts) (*models.Comment, error)
+
 	// ReviseWithAI requires admin scope when accept=true (creates a new
 	// document); write scope is sufficient when accept=false (preview only).
-	ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID string) (*RevisionOutput, error)
+	ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID, agentLabel string) (*RevisionOutput, error)
+	// EditDocument creates a new child revision representing a manual
+	// (or agent-authored) edit. Carries unresolved comments forward
+	// the same way Revise with AI does.
+	EditDocument(ctx context.Context, userID, docID, content, tokenID, agentLabel string) (*models.Document, error)
+	// MergeFromGitHub runs the 3-way Claude merge against the latest
+	// upstream content and persists the result. Synchronous — preview
+	// is an interactive-only UI concept.
+	MergeFromGitHub(ctx context.Context, userID, docID, accessToken, tokenID string) (*MergeOutput, error)
+	// PushToGitHub opens a PR with the doc's current content. PR mode
+	// only; direct-commit is intentionally web-UI-only for safety.
+	PushToGitHub(ctx context.Context, userID, docID, accessToken string, opts PushbackOpts) (*PushbackOutput, error)
+	// ListRevisions returns the full ancestor + descendant chain for
+	// docID, with each node's structural revisionIndex, model,
+	// generatedBy, and timestamps. One call replaces walking parent /
+	// children one doc at a time.
+	ListRevisions(ctx context.Context, userID, docID, accessToken string) (*RevisionChain, error)
 
 	// AllowCommentRate returns false if the calling user has hit the
 	// comment-rate budget. Same bucket the REST handlers use.
 	AllowCommentRate(userID string) bool
 	// AllowReviseRate / AcquireReviseSlot mirror the REST AI-revision guards.
 	AllowReviseRate(userID string) bool
+	AllowMergeRate(userID string) bool
 	AcquireReviseSlot(userID string) (release func(), ok bool)
 	// LogTokenAction is the same sampled per-(token,action) writer used by
 	// REST. Safe to call from tool entry points.
@@ -51,6 +77,75 @@ type API interface {
 	// with REST.
 	ValidateCommentBody(body string) (string, error)
 	ValidateReplyBody(body string) (string, error)
+}
+
+// CommentAnchorOpts is the dual shape of PATCH /api/comments/:id/anchor:
+// supply either {Start,End,Exact} for an inline anchor or DocLevel=true
+// to pin the comment without any inline highlight.
+type CommentAnchorOpts struct {
+	Start    int
+	End      int
+	Exact    string
+	Prefix   string
+	Suffix   string
+	DocLevel bool
+}
+
+// MergeOutput captures what happens after a merge: where it landed,
+// how many comments survived, how many became orphans, and what model
+// (if any) was used. Model == "noop" indicates a trivial-merge path
+// that didn't call Claude (saving the user tokens).
+type MergeOutput struct {
+	DocumentID       string `json:"documentId"`
+	UpstreamSourceSHA string `json:"upstreamSourceSha"`
+	Model            string `json:"model"`
+	TokensIn         int64  `json:"tokensIn,omitempty"`
+	TokensOut        int64  `json:"tokensOut,omitempty"`
+	CleanCount       int    `json:"cleanCount"`
+	OrphanCount      int    `json:"orphanCount"`
+	NoMergeNeeded    bool   `json:"noMergeNeeded,omitempty"`
+}
+
+// PushbackOpts is the agent-facing form of a pushback request. PR mode
+// only — DirectCommit is web-UI-only because a misfire commits to a
+// real branch immediately. Fields default to sane values when empty.
+type PushbackOpts struct {
+	Branch        string
+	CommitMessage string
+	PRTitle       string
+	PRBody        string
+	TargetBranch  string // base for the PR; default branch when empty
+}
+
+// PushbackOutput surfaces the GitHub identifiers the agent likely wants
+// to reference next (PR number / URL).
+type PushbackOutput struct {
+	Branch    string `json:"branch"`
+	CommitSHA string `json:"commitSha"`
+	CommitURL string `json:"commitUrl"`
+	PRNumber  int    `json:"prNumber"`
+	PRURL     string `json:"prUrl"`
+}
+
+// RevisionChain is the materialized view a list_revisions call returns.
+// Nodes are ordered root-first (oldest -> newest) along the
+// most-recent-child walk; CurrentID lets the caller spot where the
+// requested doc sits.
+type RevisionChain struct {
+	CurrentID string           `json:"currentId"`
+	Nodes     []RevisionNode   `json:"nodes"`
+}
+type RevisionNode struct {
+	ID                string    `json:"id"`
+	URL               string    `json:"url"`
+	RevisionIndex     int       `json:"revisionIndex"`
+	ParentID          string    `json:"parentId,omitempty"`
+	Model             string    `json:"model,omitempty"`
+	AppliedCommentIDs []string  `json:"appliedCommentIds,omitempty"`
+	GeneratedBy       string    `json:"generatedBy,omitempty"`
+	ActorKind         string    `json:"actorKind,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
+	Deleted           bool      `json:"deleted,omitempty"`
 }
 
 type RevisionOutput struct {
@@ -81,6 +176,14 @@ func New(a API, _ *store.Store, siteURL string) http.Handler {
 	s.AddTool(resolveTool(), h.resolve)
 	s.AddTool(reopenTool(), h.reopen)
 	s.AddTool(reviseTool(), h.revise)
+	// Tier 1 — closes the edit/merge/re-anchor loop for agents.
+	s.AddTool(editDocTool(), h.editDoc)
+	s.AddTool(mergeTool(), h.merge)
+	s.AddTool(patchAnchorTool(), h.patchAnchor)
+	// Tier 2 — GitHub push + chain visibility + delete-mine.
+	s.AddTool(pushTool(), h.push)
+	s.AddTool(listRevisionsTool(), h.listRevisions)
+	s.AddTool(deleteCommentTool(), h.deleteComment)
 
 	httpServer := server.NewStreamableHTTPServer(s, server.WithStateLess(true))
 	return wrapAuth(httpServer, a)
@@ -448,7 +551,7 @@ func (h *handlers) revise(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	}
 	defer release()
 
-	out, err := h.api.ReviseWithAI(ctx, id.User.ID, docID, commentIDs, accept, id.TokenID)
+	out, err := h.api.ReviseWithAI(ctx, id.User.ID, docID, commentIDs, accept, id.TokenID, id.Label)
 	if err != nil {
 		return errorResult("%s", err.Error())
 	}

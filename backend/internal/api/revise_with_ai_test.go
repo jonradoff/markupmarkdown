@@ -66,7 +66,7 @@ func TestReviseWithAI_PreviewSucceedsWithMockedAnthropic(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	out, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t")
+	out, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t", "test-agent")
 	if err != nil {
 		t.Fatalf("revise: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestReviseWithAI_AcceptCreatesNewDoc(t *testing.T) {
 	c := testutil.NewTestComment(t, st, doc.ID, user.ID, "Hi", "x")
 	_, _ = a.ResolveComment(context.Background(), user.ID, c.ID, false)
 
-	out, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, true, "t")
+	out, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, true, "t", "test-agent")
 	if err != nil {
 		t.Fatalf("revise: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestReviseWithAI_NoKey(t *testing.T) {
 	_, st, a := newTestServer(t)
 	user := testutil.NewTestUser(t, st)
 	doc := testutil.NewTestDocument(t, st, user.ID, "x")
-	if _, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t"); err == nil {
+	if _, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t", "test-agent"); err == nil {
 		t.Fatal("expected error for missing key")
 	}
 }
@@ -123,7 +123,7 @@ func TestReviseWithAI_NoResolved(t *testing.T) {
 		mustEncryptForTest(t, a, "sk-ant-fake"), "fake…ake")
 	doc := testutil.NewTestDocument(t, st, user.ID, "x")
 	// No resolved comments.
-	if _, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t"); err == nil {
+	if _, err := a.ReviseWithAI(context.Background(), user.ID, doc.ID, nil, false, "t", "test-agent"); err == nil {
 		t.Fatal("expected error for no resolved")
 	}
 }

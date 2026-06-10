@@ -68,6 +68,9 @@ func (a *API) AllowCommentRate(userID string) bool {
 func (a *API) AllowReviseRate(userID string) bool {
 	return a.rlRevise.Allow("u:" + userID)
 }
+func (a *API) AllowMergeRate(userID string) bool {
+	return a.rlMerge.Allow("u:" + userID)
+}
 func (a *API) AcquireReviseSlot(userID string) (func(), bool) {
 	release := a.reviseSlots.Acquire(userID)
 	if release == nil {
@@ -248,8 +251,7 @@ func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool
 	return c, nil
 }
 
-func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID string) (*mcpserver.RevisionOutput, error) {
-	_ = tokenID // logged at the MCP boundary; reserved here for future per-token accounting
+func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID, agentLabel string) (*mcpserver.RevisionOutput, error) {
 	doc, err := a.store.GetDocument(ctx, docID)
 	if err != nil || doc == nil {
 		return nil, errors.New("document not found")
@@ -314,6 +316,16 @@ func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs
 	if accept {
 		u, _ := a.store.GetUser(ctx, userID)
 		now := time.Now().UTC()
+		// Tokenful path = agent; default label preferred over the
+		// user display so agent revisions are visibly bot-authored.
+		generatedBy := preferName(u)
+		actorKind := models.ActorKind("")
+		if tokenID != "" {
+			actorKind = models.ActorAgent
+			if agentLabel != "" {
+				generatedBy = agentLabel
+			}
+		}
 		newDoc := &models.Document{
 			ID:           uuid.NewString(),
 			Title:        doc.Title,
@@ -325,6 +337,10 @@ func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs
 			GitHubRepo:   doc.GitHubRepo,
 			GitHubRef:    doc.GitHubRef,
 			GitHubPath:   doc.GitHubPath,
+			// Stamp the SourceSHA the AI revision was generated against
+			// so the drift check + merge engine work on agent-created
+			// revisions the same way they do on UI-created ones.
+			SourceSHA:    doc.SourceSHA,
 			ParentID:     doc.ID,
 			CreatedByID:  userID,
 			RevisionMeta: &models.RevisionMeta{
@@ -332,15 +348,25 @@ func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs
 				AppliedCommentIDs: applied,
 				TokensIn:          result.TokensIn,
 				TokensOut:         result.TokensOut,
-				GeneratedBy:       preferName(u),
+				GeneratedBy:       generatedBy,
 				GeneratedByID:     userID,
 				GeneratedAt:       now,
+				ActorKind:         actorKind,
+				TokenID:           tokenID,
+				// Ancestor pins the parent state at revision time —
+				// required for a future 3-way merge against new
+				// upstream content.
+				AncestorSourceSHA: doc.SourceSHA,
+				AncestorContent:   doc.Content,
 			},
 			CreatedAt: now, UpdatedAt: now,
 		}
 		if err := a.store.InsertDocument(ctx, newDoc); err != nil {
 			return nil, sanitizeStoreErr("mcp.revise.insert_document", err)
 		}
+		// Carry unresolved comments forward, matching the REST
+		// acceptRevision behaviour.
+		a.copyOpenCommentsToChild(ctx, doc.ID, newDoc)
 		out.NewDocID = newDoc.ID
 	}
 	return out, nil

@@ -52,6 +52,10 @@ export interface RevisionMeta {
   tokensOut: number;
   generatedBy: string;
   generatedAt: string;
+  /** Set to "agent" when the revision was written through a Bearer
+   * token (MCP or REST). Mirrors Comment.actorKind. */
+  actorKind?: "human" | "agent";
+  ancestorSourceSha?: string;
 }
 
 export interface ParentSummary {

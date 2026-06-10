@@ -162,6 +162,11 @@ export default function DocumentToolbar({
               {doc.revisionMeta.appliedCommentIds.length === 1 ? "" : "s"}
             </>
           )}
+          {doc.revisionMeta.actorKind === "agent" && (
+            <span className="text-[9px] uppercase tracking-wide bg-accent text-accent-fg rounded px-1 py-0.5">
+              agent
+            </span>
+          )}
         </div>
       )}
 

@@ -72,11 +72,30 @@ func (s *stubAPI) ResolveComment(_ context.Context, _, _ string, _ bool) (*model
 	s.resolveCalls++
 	return s.resCmt, s.resErr
 }
-func (s *stubAPI) ReviseWithAI(_ context.Context, _, _ string, _ []string, _ bool, _ string) (*RevisionOutput, error) {
+func (s *stubAPI) ReviseWithAI(_ context.Context, _, _ string, _ []string, _ bool, _, _ string) (*RevisionOutput, error) {
 	return s.reviseOut, s.reviseErr
+}
+func (s *stubAPI) EditDocument(_ context.Context, _, _, _, _, _ string) (*models.Document, error) {
+	return nil, nil
+}
+func (s *stubAPI) MergeFromGitHub(_ context.Context, _, _, _, _ string) (*MergeOutput, error) {
+	return nil, nil
+}
+func (s *stubAPI) PushToGitHub(_ context.Context, _, _, _ string, _ PushbackOpts) (*PushbackOutput, error) {
+	return nil, nil
+}
+func (s *stubAPI) ListRevisions(_ context.Context, _, _, _ string) (*RevisionChain, error) {
+	return nil, nil
+}
+func (s *stubAPI) PatchCommentAnchor(_ context.Context, _, _ string, _ CommentAnchorOpts) (*models.Comment, error) {
+	return nil, nil
+}
+func (s *stubAPI) DeleteComment(_ context.Context, _, _ string) error {
+	return nil
 }
 func (s *stubAPI) AllowCommentRate(_ string) bool { return s.rateOK }
 func (s *stubAPI) AllowReviseRate(_ string) bool  { return s.reviseOK }
+func (s *stubAPI) AllowMergeRate(_ string) bool   { return s.reviseOK }
 func (s *stubAPI) AcquireReviseSlot(_ string) (func(), bool) {
 	return func() {}, s.slotOK
 }
