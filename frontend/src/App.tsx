@@ -2,6 +2,7 @@ import { Link, Route, Routes } from "react-router-dom";
 import HomePage from "./pages/Home";
 import DocumentPage from "./pages/Document";
 import IndexPage from "./pages/Index";
+import GitHubResolve from "./pages/GitHubResolve";
 import AuthorBadge from "./components/AuthorBadge";
 import ThemeToggle from "./components/ThemeToggle";
 import NotificationBell from "./components/NotificationBell";
@@ -30,6 +31,14 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/d/:id" element={<DocumentPage />} />
           <Route path="/i/:id" element={<IndexPage />} />
+          {/* Human-readable GitHub URL routes. Ordered most-specific
+              first so /:owner/:repo/blob/:ref/* matches before the
+              shorter prefixes. The leading literals `d` and `i` are
+              also reserved at the resolver level so a github user
+              literally named "d" wouldn't collide with /d/:id. */}
+          <Route path="/:owner/:repo/blob/:ref/*" element={<GitHubResolve mode="doc" />} />
+          <Route path="/:owner/:repo" element={<GitHubResolve mode="repo" />} />
+          <Route path="/:owner" element={<GitHubResolve mode="owner" />} />
         </Routes>
       </main>
       <Footer />

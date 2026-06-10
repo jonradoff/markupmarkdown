@@ -59,6 +59,8 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}", a.deleteDocument).Methods("DELETE")
 	r.HandleFunc("/api/documents/{id}/restore", a.restoreDocument).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/forget", a.forgetDocument).Methods("POST")
+	// Human-URL resolver: ?owner=X&repo=Y&ref=Z&path=W → existing doc id.
+	r.HandleFunc("/api/documents/by-source", a.resolveBySource).Methods("GET")
 	r.HandleFunc("/api/documents/{id}/sync", a.syncDocumentSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/merge-preview", a.mergePreviewSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/merge-accept", a.mergeAcceptSource).Methods("POST")

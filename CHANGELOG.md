@@ -8,6 +8,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Human-readable URL system.** The SPA now accepts three URL shapes
+  as first-class addresses for GitHub markdown:
+  - `/owner/repo/blob/ref/path` → individual document (auto-clones if
+    not yet ingested; otherwise resolves to the existing chain leaf)
+  - `/owner/repo` → repo index
+  - `/owner` → user or org index
+  So `https://mumd.metavert.io/beamable/CrmDesign/blob/main/WINGMAN_PRD.md`
+  Just Works as a shareable link. The legacy `/d/:id` and `/i/:id`
+  URLs still resolve, but a `replaceState` swaps them to the canonical
+  human path on mount so the address bar always reads the way the
+  user pasted it. Backed by a new `GET /api/documents/by-source`
+  endpoint that deduplicates against existing docs (so two people
+  pasting the same blob URL land on the same place — comments
+  aggregate instead of fracturing across N parallel clones).
+- **Favicon.** The canonical Markdown mark by Dustin Curtis (CC0,
+  used by GitHub / VS Code / CommonMark) centered in a 256×256
+  rounded square so it reads cleanly at 16×16 / 32×32. Dark-mode
+  aware via the `prefers-color-scheme` media query in the SVG.
+- **Live progress on index pages.** The "you're staring at Loading…"
+  problem during a big org spider is fixed three ways: (a) ProgressBanner
+  renders from frame 1 (before the meta event arrives), (b) the home
+  submit button reads "Looking up GitHub…" for index targets so the
+  POST round-trip isn't dead air, (c) the banner now includes a live
+  activity log of the last 8 scanned repos (newest at top, font-mono,
+  fading opacity).
 - **Live progress + parallel scanning for index materialization.** Org
   and user-profile indexes now stream their results via an SSE channel
   (`GET /api/indexes/:id/stream`) so the user sees "Scanning 47/142

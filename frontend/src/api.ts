@@ -103,6 +103,14 @@ export const api = {
    * of a forgotten chain don't re-surface. */
   forgetDocument: (id: string) =>
     req<void>(`/api/documents/${id}/forget`, { method: "POST" }),
+
+  /** Resolve a GitHub blob URL (owner/repo/ref/path) to an existing
+   * document's id, if one exists. 404 means "not cloned yet" — the
+   * caller should then POST /api/documents to create. */
+  findDocBySource: (q: { owner: string; repo: string; ref: string; path: string }) =>
+    req<{ id: string; title: string }>(
+      `/api/documents/by-source?owner=${encodeURIComponent(q.owner)}&repo=${encodeURIComponent(q.repo)}&ref=${encodeURIComponent(q.ref)}&path=${encodeURIComponent(q.path)}`,
+    ),
   /** Pulls the latest source from GitHub, re-anchors comments where
    * possible, and flips the rest to orphan. */
   syncDocumentSource: (id: string) =>

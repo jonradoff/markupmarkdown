@@ -194,6 +194,60 @@ type docStore interface {
 	ListChildren(ctx context.Context, parentID string) ([]models.Document, error)
 }
 
+// resolveBySource implements GET /api/documents/by-source. Given a
+// (owner, repo, ref, path) tuple, returns the existing chain leaf
+// doc if one exists, or 404 if not. Used by the human-readable URL
+// resolver to land on the same doc when two viewers paste the same
+// github blob URL — comments aggregate on one doc rather than
+// fracturing across N parallel clones.
+func (a *API) resolveBySource(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	owner := strings.TrimSpace(q.Get("owner"))
+	repo := strings.TrimSpace(q.Get("repo"))
+	ref := strings.TrimSpace(q.Get("ref"))
+	path := strings.TrimSpace(q.Get("path"))
+	if owner == "" || repo == "" || path == "" {
+		writeError(w, http.StatusBadRequest, "owner, repo, and path are required")
+		return
+	}
+	root, err := a.store.FindLatestDocumentBySource(r.Context(), owner, repo, ref, path)
+	if err != nil {
+		internalError(w, "store.find_doc_by_source", err)
+		return
+	}
+	if root == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "no document matches that source",
+			"kind":  "not_found",
+		})
+		return
+	}
+	// Walk to leaf so the URL lands on the current state, not an
+	// older revision.
+	leaf := root
+	if d, _ := a.store.LatestDescendant(r.Context(), root.ID); d != nil {
+		leaf = d
+	}
+	// Access check on the leaf — private repo viewers without GitHub
+	// access shouldn't even learn the doc exists.
+	if leaf.Private {
+		user := a.currentUser(r)
+		if user == nil {
+			writeError(w, http.StatusUnauthorized, "sign in required for this private document")
+			return
+		}
+		ok, _ := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, leaf.GitHubOwner, leaf.GitHubRepo)
+		if !ok {
+			writeError(w, http.StatusForbidden, "you don't have access to this document's source repo")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":    leaf.ID,
+		"title": leaf.Title,
+	})
+}
+
 func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 	// Read-only tokens cannot mint new documents (and thus cannot burn the
 	// owner's URL-ingest rate budget). Cookie sessions always satisfy this.

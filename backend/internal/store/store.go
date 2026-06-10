@@ -1149,6 +1149,37 @@ func (s *Store) PurgeExpiredDeletes(ctx context.Context, cutoff time.Time) (int6
 	return purged, nil
 }
 
+// FindLatestDocumentBySource returns the most recently updated, non-
+// deleted document anchored to the same GitHub blob path
+// (owner/repo/ref/path). Used by the human-readable URL system to
+// dedupe: a viewer pasting the same github URL twice ends up on the
+// SAME doc page so comments aggregate instead of fracturing across
+// N parallel clones. Returns nil when no match exists.
+func (s *Store) FindLatestDocumentBySource(ctx context.Context, owner, repo, ref, path string) (*models.Document, error) {
+	if owner == "" || repo == "" || path == "" {
+		return nil, nil
+	}
+	filter := bson.M{
+		"github_owner": owner,
+		"github_repo":  repo,
+		"github_path":  path,
+		"deleted_at":   bson.M{"$exists": false},
+		"parent_id":    bson.M{"$exists": false}, // only chain roots — we walk to leaf via LatestDescendant
+	}
+	if ref != "" {
+		filter["github_ref"] = ref
+	}
+	opts := options.FindOne().SetSort(bson.D{{Key: "updated_at", Value: -1}})
+	var doc models.Document
+	if err := s.Documents().FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &doc, nil
+}
+
 func (s *Store) UpdateDocumentTitle(ctx context.Context, id, title string) error {
 	_, err := s.Documents().UpdateOne(ctx, bson.M{"_id": id}, bson.M{
 		"$set": bson.M{"title": title, "updated_at": time.Now().UTC()},

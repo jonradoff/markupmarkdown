@@ -7,6 +7,7 @@ import { useToast, toastMessageFor } from "../components/Toast";
 import { useDialog } from "../components/Dialogs";
 import { useAuth } from "../auth";
 import { formatRelative } from "../utils/format";
+import { canonicalIndexPath, rewriteToCanonical } from "../utils/canonicalUrl";
 
 // IndexPage renders a single markdown-index (repo / user / org).
 // Clicking a row ingests the corresponding .md file via the existing
@@ -157,6 +158,10 @@ export default function IndexPage() {
           setIndex({ ...meta, items: [] });
           setTitleDraft(meta.title);
           document.title = `${meta.title} · markupmarkdown`;
+          // Replace /i/:slug in the address bar with /:owner or
+          // /:owner/:repo so the URL reads as the human pasted it.
+          const canonical = canonicalIndexPath(meta);
+          if (canonical) rewriteToCanonical(canonical);
           break;
         }
         case "ready":
