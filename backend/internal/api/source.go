@@ -247,9 +247,10 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 // the root.
 func sourceCheckResponse(current, target *models.Document, failed bool) map[string]any {
 	out := map[string]any{
-		"sourceSha":       target.SourceSHA,
-		"sourceLatestSha": target.SourceLatestSHA,
-		"sourceDriftedAt": target.SourceDriftedAt,
+		"sourceSha":             target.SourceSHA,
+		"sourceLatestSha":       target.SourceLatestSHA,
+		"sourceDriftedAt":       target.SourceDriftedAt,
+		"sourceDriftIgnoredSha": target.SourceDriftIgnoredSHA,
 	}
 	if failed {
 		out["checkFailed"] = true
@@ -346,6 +347,57 @@ type reanchorResult struct {
 // comment (no inline highlight). Convention: Start==End==0 and Exact=="".
 func isDocLevel(a models.Anchor) bool {
 	return a.Start == 0 && a.End == 0 && strings.TrimSpace(a.Exact) == ""
+}
+
+// ignoreDriftSource implements POST /api/documents/:id/drift/ignore.
+// Records the upstream SHA the user explicitly dismissed so the drift
+// banner stays suppressed for THAT SHA only — if a newer upstream
+// commit shows up later, SetDocumentSourceCheck clears the marker so
+// the banner returns. The drift state is tracked on the chain root
+// (revision children share their root's drift), so we update the root
+// here too.
+func (a *API) ignoreDriftSource(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	doc, accErr := a.checkDocAccess(r, id)
+	if accErr != nil {
+		a.writeAccessError(w, r, accErr)
+		return
+	}
+	// Dismissing the drift banner mutates how the doc is presented to
+	// every viewer — keep it behind the same admin gate as accept-AI
+	// and sync (only the doc's owner / cookie session can do it).
+	if !a.enforceScope(w, r, models.TokenScopeAdmin) {
+		return
+	}
+	target := a.rootForDrift(doc)
+	if target == nil {
+		target = doc
+	}
+	sha := target.SourceLatestSHA
+	if sha == "" {
+		writeError(w, http.StatusBadRequest, "no drift to ignore")
+		return
+	}
+	if err := a.store.IgnoreDocumentSourceDrift(r.Context(), target.ID, sha); err != nil {
+		internalError(w, "store.ignore_drift", err)
+		return
+	}
+	go a.hub.Broadcast(target.ID, "doc-updated")
+	if target.ID != doc.ID {
+		go a.hub.Broadcast(doc.ID, "doc-updated")
+	}
+	// Hand back the updated doc so the caller's local state can
+	// reflect the dismissal without an extra GET.
+	updated, err := a.store.GetDocument(r.Context(), id)
+	if err != nil || updated == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	updatedTarget := a.rootForDrift(updated)
+	if updatedTarget == nil {
+		updatedTarget = updated
+	}
+	writeJSON(w, http.StatusOK, sourceCheckResponse(updated, updatedTarget, false))
 }
 
 // syncDocumentSource implements POST /api/documents/:id/sync. Re-fetches

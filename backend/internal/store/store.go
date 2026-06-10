@@ -1000,6 +1000,10 @@ func (s *Store) UpdateDocumentTitle(ctx context.Context, id, title string) error
 // latestSHA equals the stored SourceSHA we clear the drift fields;
 // otherwise we record latestSHA + the drift timestamp so the frontend
 // can render the "source updated on GitHub" banner.
+//
+// SourceDriftIgnoredSHA is preserved untouched here — the API layer is
+// responsible for clearing it when latestSHA moves past the ignored
+// value (a newer upstream commit unstucks the banner).
 func (s *Store) SetDocumentSourceCheck(ctx context.Context, id, latestSHA string) error {
 	now := time.Now().UTC()
 	var doc models.Document
@@ -1012,10 +1016,19 @@ func (s *Store) SetDocumentSourceCheck(ctx context.Context, id, latestSHA string
 		// In sync (or no baseline to compare against).
 		unset["source_latest_sha"] = ""
 		unset["source_drifted_at"] = ""
+		// The ignore-marker is also no longer relevant once we're back
+		// in sync — drop it so the next genuine drift surfaces cleanly.
+		unset["source_drift_ignored_sha"] = ""
 	} else {
 		set["source_latest_sha"] = latestSHA
 		if doc.SourceDriftedAt == nil {
 			set["source_drifted_at"] = now
+		}
+		// A new upstream SHA replaces any prior "ignore" choice — the
+		// user agreed to ignore SHA-A, not SHA-B. Drop the marker so
+		// the banner re-surfaces.
+		if doc.SourceDriftIgnoredSHA != "" && doc.SourceDriftIgnoredSHA != latestSHA {
+			unset["source_drift_ignored_sha"] = ""
 		}
 	}
 	update := bson.M{"$set": set}
@@ -1023,6 +1036,49 @@ func (s *Store) SetDocumentSourceCheck(ctx context.Context, id, latestSHA string
 		update["$unset"] = unset
 	}
 	_, err := s.Documents().UpdateOne(ctx, bson.M{"_id": id}, update)
+	return err
+}
+
+// IgnoreDocumentSourceDrift records that the user dismissed the drift
+// banner for sha — typically the doc's current SourceLatestSHA. The
+// banner stays suppressed until upstream moves past sha, at which
+// point SetDocumentSourceCheck clears the marker so the new drift
+// shows.
+func (s *Store) IgnoreDocumentSourceDrift(ctx context.Context, id, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	_, err := s.Documents().UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{"$set": bson.M{"source_drift_ignored_sha": sha}},
+	)
+	return err
+}
+
+// UpdateDocumentSourceSHA stamps a new baseline SourceSHA on the doc
+// — used after a successful direct-commit pushback to the doc's
+// tracking branch, so the next drift check sees the freshly-committed
+// SHA as "in sync" rather than reporting drift against the pre-push
+// state.
+func (s *Store) UpdateDocumentSourceSHA(ctx context.Context, id, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	_, err := s.Documents().UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{
+			"$set": bson.M{
+				"source_sha":        sha,
+				"source_checked_at": now,
+			},
+			"$unset": bson.M{
+				"source_latest_sha":        "",
+				"source_drifted_at":        "",
+				"source_drift_ignored_sha": "",
+			},
+		},
+	)
 	return err
 }
 

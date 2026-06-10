@@ -93,6 +93,11 @@ export interface MdDocument {
   sourceLatestSha?: string;
   /** When the drift was first observed. */
   sourceDriftedAt?: string;
+  /** Upstream SHA the user explicitly dismissed via the drift
+   * banner's "Ignore" button. The banner stays hidden while this
+   * equals sourceLatestSha; if upstream moves to a newer SHA, the
+   * backend clears the marker and the banner returns. */
+  sourceDriftIgnoredSha?: string;
   parentId?: string;
   revisionMeta?: RevisionMeta;
   parent?: ParentSummary;

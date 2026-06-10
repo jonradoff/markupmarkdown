@@ -213,9 +213,21 @@ export const api = {
       sourceSha?: string;
       sourceLatestSha?: string;
       sourceDriftedAt?: string;
+      sourceDriftIgnoredSha?: string;
       rootDocument?: { id: string; title: string };
       checkFailed?: boolean;
     }>(`/api/documents/${id}/check-source`, { method: "POST" }),
+
+  /** Dismiss the source-drift banner for the doc's current
+   * sourceLatestSha. Banner stays suppressed until a newer upstream
+   * SHA shows up. */
+  ignoreSourceDrift: (id: string) =>
+    req<{
+      sourceSha?: string;
+      sourceLatestSha?: string;
+      sourceDriftedAt?: string;
+      sourceDriftIgnoredSha?: string;
+    }>(`/api/documents/${id}/drift/ignore`, { method: "POST" }),
 
   listTrash: () => req<TrashItem[]>("/api/me/trash"),
   restoreDocument: (id: string) =>

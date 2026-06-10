@@ -174,8 +174,8 @@ func homepageMeta(siteURL string) *ogMeta {
 	if siteURL == "" {
 		siteURL = "https://mumd.metavert.io"
 	}
-	title := "Comment on Markdown Files Like Google Docs · markupmarkdown"
-	desc := "Google-Docs-style commenting for any Markdown file. Paste a GitHub URL or upload, drag-select text, leave threaded comments. Realtime sync, @-mentions, AI revision via Claude, and an MCP server so agents review alongside humans."
+	title := "Google Docs for Markdown — Edit, Comment & Ship .md Files · markupmarkdown"
+	desc := "Google-Docs-style review for any Markdown file. Comment threads, native CodeMirror editor with formatting toolbar, find & replace, GitHub round-trip (open a PR or commit directly), AI revision via Claude, realtime sync, and an MCP server so agents review alongside humans. Edits happen on the actual markdown — your repo stays the source of truth."
 	app := `{
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -195,6 +195,10 @@ func homepageMeta(siteURL string) *ogMeta {
   "mainEntity": [
     {"@type": "Question", "name": "How do I comment on a Markdown file?",
      "acceptedAnswer": {"@type": "Answer", "text": "Paste the URL of any .md file (raw or a github.com/.../blob/.../*.md link) or upload a local file, then drag-select text in the rendered document and click the Comment button. Replies, @-mentions, mark-as-done, and resolve are one click each."}},
+    {"@type": "Question", "name": "Can I edit the Markdown directly?",
+     "acceptedAnswer": {"@type": "Answer", "text": "Yes. Click Edit and you get a native CodeMirror editor with syntax highlighting, a formatting toolbar (bold, italic, code, headings, lists, links, code blocks, blockquote, HR), find and replace with regex, light and dark theme, and a live side-by-side preview. ⌘S saves your changes as a new revision; comments stay anchored to their text spans as you edit."}},
+    {"@type": "Question", "name": "Can I push my edits back to GitHub?",
+     "acceptedAnswer": {"@type": "Answer", "text": "Yes. For docs cloned from a GitHub blob URL, click Push to GitHub. Choose between opening a pull request from a new branch (with prefilled title and body) or committing directly to a branch like main. The OAuth token from your session is what authenticates — no separate GitHub PAT needed. Branch protection rules are enforced on GitHub's side and surfaced verbatim if they block the push."}},
     {"@type": "Question", "name": "Can I review Markdown files from private GitHub repos?",
      "acceptedAnswer": {"@type": "Answer", "text": "Yes. Sign in with GitHub and you can open files from any repo you have read access to. Markupmarkdown re-verifies your access on every read, so private docs stay private — losing access means losing visibility."}},
     {"@type": "Question", "name": "How does AI revision work?",
@@ -205,10 +209,12 @@ func homepageMeta(siteURL string) *ogMeta {
      "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is MIT-licensed open source. The whole stack is a single Go binary plus a React SPA plus MongoDB — designed to deploy on a single Fly.io machine. Bring your own Anthropic API key for AI revision so the costs and data stay with you."}}
   ]
 }`
-	noscript := `<h1>Comment on Markdown Files Like Google Docs</h1>
-      <p>Paste a GitHub URL or upload a local .md file. Drag-select text in the rendered document, leave a margin comment, get threaded replies, @-mentions, resolve, and AI revision via Claude. Realtime sync via Server-Sent Events. Open source (MIT).</p>
+	noscript := `<h1>Google Docs for Markdown — Edit, Comment & Ship .md Files</h1>
+      <p>Paste a GitHub URL or upload a local .md file. Drag-select text in the rendered document, leave a margin comment, get threaded replies and @-mentions. Click Edit for a native CodeMirror editor with a formatting toolbar, find &amp; replace, and live preview. Push your changes back to GitHub as a pull request or direct commit. AI revision via Claude. Realtime sync via Server-Sent Events. Open source (MIT).</p>
       <h2>For PRDs, RFCs, release notes, and prompt libraries</h2>
-      <p>Markdown is where a lot of real product thinking lives — but the review tools are miserable. Markupmarkdown brings Google-Docs-style margin comments to your existing .md files, without dragging your team into a code-review workflow.</p>
+      <p>Markdown is where a lot of real product thinking lives — but the review tools are miserable. Markupmarkdown brings Google-Docs-style commenting <em>and</em> editing to your existing .md files, without dragging your team into a code-review workflow. And unlike Google Docs, you edit the actual markdown — so the file in your repo stays the source of truth.</p>
+      <h2>Round-trip back to GitHub</h2>
+      <p>For docs cloned from a GitHub blob URL, push your revisions back as a pull request from a new branch (with prefilled title and body), or commit directly to a branch you pick. Your GitHub OAuth token already in the session does the work — no separate GitHub PAT, no separate workflow.</p>
       <h2>Humans and AI agents review on the same documents</h2>
       <p>Markupmarkdown ships a Model Context Protocol (MCP) server so AI agents read what humans read, leave threads humans can approve, and apply resolved feedback as new revisions — with explicit human sign-off.</p>
       <h2>Open source, self-hosted, bring your own AI key</h2>

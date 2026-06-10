@@ -10,6 +10,8 @@ The project is **markupmarkdown**: a Google-Docs-style commenting app for markdo
 
 This is one Go binary + one React SPA + MongoDB Atlas. No queue, no S3, no Redis, no separate worker. The intentional design is "small enough to read on a Sunday." Don't add infrastructure unless the feature genuinely demands it.
 
+The product is now best described as **"Google Docs for Markdown."** Originally it shipped as a commenting-only tool; the editor + GitHub round-trip (manual revisions, soft edit lock, 3-way merge, push as PR or direct commit) brought it to a full review-and-ship surface. When you're scoping a new feature, anchor on that mental model — what would Google Docs do here? — but always preserve the design principle: edits happen on the actual markdown text, not a visual mirror. The file in the repo stays the source of truth.
+
 Three audiences share the same data model:
 
 1. **Humans** — cookie session (`mm_session`), full account privileges.
@@ -236,6 +238,45 @@ When you add a new piece of functionality, walk this checklist:
 11. **Build check both sides.**
 
 ---
+
+## Editor surface (CodeMirror 6)
+
+The editor is a forwardRef'd CodeMirror 6 instance in [frontend/src/components/EditorPane.tsx](frontend/src/components/EditorPane.tsx) with a few properties worth knowing before you touch it:
+
+- **No internal scroll.** The CodeMirror theme extension sets `'&': { height: 'auto', maxHeight: 'none' }` and `'.cm-scroller': { overflow: 'visible' }` so the editor flows in the page-level scroll. Don't re-enable inner scrolling — it breaks the sticky toolbar AND the comment-card alignment (sticky binds to the nearest scroll container, and the cards-layout effect assumes editor coords share the window viewport's frame).
+- **Page-level scroll is load-bearing for layout.** The cards-layout effect in `Document.tsx` listens for `window.scroll` (rAF-throttled) to re-position anchored comment cards. If you ever add an inner-scrolling column anywhere on the Document page, also re-layout on its scroll, otherwise comments will drift out of sync with their highlights.
+- **Sidebar is `sticky top-0 h-screen self-start`.** It stays pinned while the body scrolls; its own `overflow-y-auto` handles long comment lists. Don't change this unless you have a layout reason to — the sticky toolbar fix relies on the sidebar not capturing scroll.
+- **`EditorPaneHandle` exposes two methods.** `coordsForAnchor(exact)` and `scrollAnchorIntoView(exact)`. The `Document.tsx` page calls them on activeId change and during the cards-layout pass. Both fall back via `lineBlockAt + contentTop` when CodeMirror's `coordsAtPos` returns null for off-screen anchors — don't drop that fallback or off-screen comments stop aligning.
+- **Theme tracks app theme.** A MutationObserver on `<html>.class` flips the CodeMirror theme between `oneDark` and `"light"`. If you swap the global theme switch, update this observer.
+- **`applyWrap` in [utils/markdownActions.ts](frontend/src/utils/markdownActions.ts) handles BOTH overshoot cases.** Case A: markers sit OUTSIDE the selection. Case B: markers are INCLUDED in the selection (user dragged past the `**`). Both strip one layer; selection adjustments are deliberate. Don't "simplify" by removing Case B — selection overshoot is the common user pattern.
+
+## Anchored card layout (Document.tsx)
+
+The card layout has three invariants you'll regret breaking:
+
+1. **The sidebar must not scroll programmatically in response to `activeId` changes.** Doing so feeds `sidebar.scrollTop` back into `containerRect.top`, which the layout effect uses to compute `desiredTop = editorAnchorY - containerTop`. Every Next click would then shift cards further down the container, the container's `minHeight` would grow to fit, the sidebar would become internally scrollable, and the cards would march off into space. Bringing a comment into view is the body-scroll's job (via `scrollAnchorIntoView` on the editor in edit mode, `window.scrollTo` on the rendered highlight rect in view mode). The body scroll naturally brings the anchored card with it.
+2. **`visibleComments` is sorted by `anchor.start`, but MCP-added agent comments all store `anchor.start = 0`** — they're resolved against the doc text at render time. The cards-layout effect explicitly re-sorts by computed `desiredTop` before `relaxAnchors` runs. Don't drop this sort or agent-authored comments will stack in creation order rather than document order.
+3. **The cards container's `minHeight` is dynamic** — it expands to fit the lowest card so the linear sidebar sections below (orphans, doc-level, composer) don't overlap. That's fine as long as the sidebar doesn't internally scroll in response (see #1). If you ever need cards positioned beyond viewport height, prefer hiding them (via `visibility: hidden` when far off-screen) over making the sidebar scrollable.
+4. **Only in-viewport (±200 px) comments lay out.** Cards whose anchor is far above or far below the viewport are filtered out of the layout pass (the active card is exempted). Without this, above-viewport cards clamp to `minTop = 0` and stack — their combined heights then push the active card hundreds of pixels off its highlighted line. If you change this filter, re-test the "I press Next and the active card lands somewhere weird" failure mode.
+
+## Edit-mode scroll-to-anchor
+
+`scrollAnchorIntoView` on the EditorPane handle is the **single** driver for scrolling the page to an active comment in edit mode. Two important nuances:
+
+- **Don't add a second scroller.** The EditorPane's own `useEffect` on `activeAnchorExact` used to also call `window.scrollTo`, and it fought with the Document.tsx caller. One scroll surface, one driver — keep it that way.
+- **Two-pass measurement.** CodeMirror uses estimated line heights for content outside its render viewport. A single `coordsAtPos` for a far-off line can be tens to hundreds of pixels wrong, and the error compounds as content scrolls into view and the height map refines. The handle does an instant nudge to the estimated target, then on the second rAF takes an authoritative measurement and smooth-scrolls the rest of the way. Don't simplify this to a single smooth-scroll — the user sees the page land short of the active comment.
+
+## Edit lock + manual revisions
+
+- **The soft edit lock is in-process** ([backend/internal/api/editlock.go](backend/internal/api/editlock.go)). Map keyed by docID with a TTL. On a multi-machine deploy, two users on different machines could both hold the lock until SSE catches up — acceptable for a small fleet, not for higher concurrency. Move it to Mongo with a TTL index if you ever scale out.
+- **Manual edits go through `POST /api/documents/:id/manual-revisions`**, which creates a new child doc with `revision_meta.model = "manual"` and stamps `ancestorContent` so a future merge has a 3-way base. Carry-forward of unresolved comments to the new doc is automatic — don't duplicate that logic in client code.
+- **Edit mode requires a real signed-in user.** Author display name in localStorage is enough to comment; the edit lock requires `currentUser != nil` (cookie session OR bearer token). Bearer tokens that go through `edit_document` over MCP work fine.
+
+## GitHub round-trip (pushback)
+
+- **The pushback path uses the user's OAuth token.** The same access token already in the session signs the GitHub Contents + Pulls API calls; there is no separate PAT or app installation. If you ever change the OAuth scope, audit pushback at the same time — `repo` is required for write.
+- **PR mode and direct-commit mode share `pushback.go`.** PR mode opens a new branch, commits, opens the PR. Direct-commit pushes straight to `TargetBranch`. Branch-protection rejection is surfaced verbatim — do not retry or fall back automatically. The user picks the mode in the modal.
+- **MCP only exposes PR mode** ([handlers_extra.go](backend/internal/mcpserver/handlers_extra.go)). Direct commits over MCP are intentionally absent because branch protection is a human-policy concern. Don't add a direct-commit MCP tool without a strong reason.
 
 ## Non-obvious gotchas (in the order someone tripped on them)
 

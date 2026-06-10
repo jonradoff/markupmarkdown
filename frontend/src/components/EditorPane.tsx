@@ -15,7 +15,8 @@ import CodeMirror, {
 } from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
-import { EditorSelection } from "@codemirror/state";
+import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, type DecorationSet } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import MarkdownRender from "./MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
@@ -28,6 +29,28 @@ import {
   applyWrap,
   type EditState,
 } from "../utils/markdownActions";
+
+// Highlight extension: a StateField holds a single Decoration that
+// paints the active comment's anchor span with the same yellow
+// background used in rendered (view-mode) markdown. Document.tsx
+// pushes a (from, to) range via `setActiveHighlight` whenever the
+// active comment changes; passing `null` clears the highlight.
+const setActiveHighlight = StateEffect.define<{ from: number; to: number } | null>();
+const activeHighlightMark = Decoration.mark({ class: "cm-active-comment-highlight" });
+const activeHighlightField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setActiveHighlight)) {
+        const v = e.value;
+        next = v ? Decoration.set([activeHighlightMark.range(v.from, v.to)]) : Decoration.none;
+      }
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 // EditorPaneHandle is the imperative surface Document.tsx pokes when
 // the anchored comment-card layout needs editor-relative positions —
@@ -152,6 +175,14 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
       markdown({ base: markdownLanguage, codeLanguages: [] }),
       search({ top: true }),
       EditorView.lineWrapping,
+      activeHighlightField,
+      EditorView.baseTheme({
+        ".cm-active-comment-highlight": {
+          backgroundColor: "rgba(250, 204, 21, 0.32)", // amber-400/32 — readable in both themes
+          borderRadius: "2px",
+          boxShadow: "0 0 0 1px rgba(250, 204, 21, 0.5)",
+        },
+      }),
       // Disable CodeMirror's internal scroll viewport — the parent
       // column scrolls the page instead, so the user sees one
       // scrollbar instead of a scroll-in-scroll. As a bonus, every
@@ -204,22 +235,36 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
   );
 
   // Locate the active comment's quoted text in the editor's content
-  // and select it, the same gesture the old textarea version used.
-  // findApproxIndex falls back to the longest contiguous substring
-  // when the rendered anchor spans markdown formatting markers.
+  // and paint a yellow highlight over the matching range — same visual
+  // signal users see in view mode's rendered Markdown. Setting a text
+  // selection (the old behavior) wasn't visible enough, especially in
+  // dark mode and on an unfocused editor. The highlight is applied via
+  // a StateField + Decoration so it persists across cursor moves and
+  // typing in other regions.
+  //
+  // We don't scroll here — Document.tsx's activeId effect drives the
+  // single page-level scroll via scrollAnchorIntoView(). Having both
+  // places try to scroll caused them to race (Document fires
+  // synchronously, this effect's rAF fires later), so each one would
+  // compute a target against a different mid-scroll state and clobber
+  // the other's animation. One scroll surface, one driver.
   useEffect(() => {
-    if (!activeAnchorExact) return;
     const view = cmRef.current?.view;
     if (!view) return;
+    if (!activeAnchorExact) {
+      view.dispatch({ effects: setActiveHighlight.of(null) });
+      return;
+    }
     const text = view.state.doc.toString();
     const idx = findApproxIndex(text, activeAnchorExact);
-    if (idx < 0) return;
+    if (idx < 0) {
+      view.dispatch({ effects: setActiveHighlight.of(null) });
+      return;
+    }
     const end = idx + matchLength(text, idx, activeAnchorExact);
     view.dispatch({
-      selection: EditorSelection.range(idx, end),
-      effects: EditorView.scrollIntoView(idx, { y: "center" }),
+      effects: setActiveHighlight.of({ from: idx, to: end }),
     });
-    view.focus();
   }, [activeAnchorExact]);
 
   function openSearch() {
@@ -265,6 +310,59 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
       if (!view || !exact) return;
       const idx = findApproxIndex(view.state.doc.toString(), exact);
       if (idx < 0) return;
+
+      // cm-scroller has overflow:visible so the body is the actual
+      // scroll surface. CodeMirror uses a height map with line-height
+      // estimates for content outside its render viewport, so a single
+      // coordsAtPos read can be 50-100+ px off for a distant line —
+      // and as the page scrolls, more lines render, the height map
+      // refines, and the target moves. We work around this by:
+      //   1. nudging the page toward an estimate (instant, no animation)
+      //   2. after CM has had a frame to refine its viewport, taking a
+      //      second authoritative measurement
+      //   3. smooth-scrolling the rest of the way to the exact target
+      // The user sees a single smooth animation to the right place.
+      const targetY = window.innerHeight / 3;
+
+      function measure(): number | null {
+        const coords = view!.coordsAtPos(idx);
+        if (coords) return coords.top;
+        try {
+          const block = view!.lineBlockAt(idx);
+          const contentTop = view!.contentDOM.getBoundingClientRect().top;
+          return contentTop + block.top;
+        } catch { return null; }
+      }
+
+      const first = measure();
+      if (first == null) return;
+      const firstDelta = first - targetY;
+      if (Math.abs(firstDelta) > 4) {
+        // Instant jump (no smooth) so the page is at the rough target
+        // when CM does its next viewport pass.
+        window.scrollTo({ top: window.scrollY + firstDelta });
+      }
+
+      // Two frames: one for CM's updateListener to fire on the new
+      // viewport, one for the layout to settle so coordsAtPos returns
+      // the authoritative position.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const second = measure();
+          if (second == null) return;
+          const delta = second - targetY;
+          if (Math.abs(delta) > 4) {
+            window.scrollTo({
+              top: window.scrollY + delta,
+              behavior: "smooth",
+            });
+          }
+        });
+      });
+
+      // Keep CM's own dispatch as a hint to its viewport tracker — it's
+      // a no-op for our overflow:visible scroller, but it tells CM the
+      // user's intent so future measure passes pre-render the area.
       view.dispatch({
         effects: EditorView.scrollIntoView(idx, { y: "center" }),
       });

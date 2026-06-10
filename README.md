@@ -4,7 +4,9 @@
 [![codecov](https://codecov.io/gh/jonradoff/markupmarkdown/branch/master/graph/badge.svg)](https://codecov.io/gh/jonradoff/markupmarkdown)
 [![Go Report Card](https://goreportcard.com/badge/github.com/jonradoff/markupmarkdown)](https://goreportcard.com/report/github.com/jonradoff/markupmarkdown)
 
-**Comment on any markdown file like it's a Google Doc — and bring agents into the same review loop as your team.** Paste a URL, drag-select text, leave a margin comment. Your teammates see it in real time. Resolve the thread when you're done — or hand the resolved threads to Claude and watch it produce a clean revised version. Agents can join the same review through an MCP server: they read what humans read, leave threads humans approve, and (with explicit human sign-off) apply the resolved feedback as a new revision.
+**Google Docs for markdown — comment on, edit, and ship `.md` files like it's a real document.** Paste a URL, drag-select text, leave a margin comment. Your teammates see it in real time. Edit the raw markdown in a native CodeMirror editor with a formatting toolbar, find-and-replace, and live preview. Resolve threads, then hand them to Claude for an AI-revised version — or push your edits straight back to GitHub as a pull request or direct commit. Agents join the same review through an MCP server: they read what humans read, leave threads humans approve, and (with explicit human sign-off) apply the resolved feedback as a new revision.
+
+Unlike Google Docs, edits happen on the actual markdown — so the file in your repo stays the source of truth and the round-trip back to GitHub is one click.
 
 Live: **<https://mumd.metavert.io/>**
 
@@ -42,7 +44,11 @@ Everything you'd expect from a Google-Docs-style review experience, in a codebas
 - **Unread filter pill** — shows you only the threads with new activity since your last visit, with a count badge.
 - **Step through comments** with `j` / `k` (or `↑` / `↓`, or the Prev/Next buttons). The position counter respects whichever filter is active.
 - **In-app notifications** — bell icon in the header, badge for unread count, dropdown with deep links into the relevant comment.
+- **Native markdown editor** — click *Edit* and you get a real CodeMirror 6 editor with syntax highlighting, light/dark theme, and a formatting toolbar (bold, italic, code, H1/H2/H3, lists, task list, blockquote, link, code block, HR). The toolbar stays pinned at the top of the editor as you scroll long documents. `⌘S` to save as a new revision, `⌘F` for find & replace (regex + case-sensitivity), `Esc` to cancel. Comments stay anchored to their text spans as you edit; the comment sidebar tracks the same lines in real time. A soft *edit lock* prevents two people from clobbering each other — whoever clicks Edit second sees a banner with the holder's name. Click *Show preview* for a side-by-side rendered view.
+- **Smart formatting toolbar** — selecting `**bold**` and clicking `B` removes the markers (toggles off) instead of doubling them up. Same for italic, code, headings. The selection overshoot pattern (`**bold**` with the markers included) is detected and stripped cleanly.
+- **Push changes back to GitHub** — for docs cloned from a GitHub blob URL, click *Push to GitHub* on any revision. Two modes: **open a pull request** from a new branch (with prefilled title + body that reference the doc), or **commit directly** to a branch you pick (typically `main`). Branch-protection rules are enforced on GitHub's side and surfaced verbatim if they reject the push. The OAuth token already in your session is what authenticates — no separate GitHub PAT needed.
 - **GitHub source-change detection** — for docs cloned from GitHub, we track the upstream blob SHA. When the source file gets new commits, every viewer sees a "Source updated on GitHub" banner. Click *Sync from GitHub* and we pull the latest content and re-anchor your comments to the new text automatically wherever the original quote still appears. Comments whose quoted text no longer exists surface in a dedicated *Comments without anchors* section at the bottom of the doc — re-anchor them to new text manually (drag-select, click *Re-anchor here*), pin them as document-level, or just leave them. Document-level comments (no inline highlight) live in their own sidebar section and survive any source change.
+- **Revision tree** — every save (manual edit or AI revision) creates a new child document with a parent link. Open the chain breadcrumb to jump between versions; the home list dedups to the latest leaf so your *Recents* aren't full of intermediate drafts.
 - **Soft delete with 30-day recovery** — deleted docs sit in Trash and can be restored before the daily purge sweep.
 - **Light / dark theme** that respects your system pref.
 - **Share dialog** — copies the link with an explicit note about access (private docs warn you about the GitHub-repo requirement before you send the URL).
@@ -156,21 +162,41 @@ The agent passes the token as `Authorization: Bearer mmk_…` on REST and MCP ca
 
 ### MCP server
 
-Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go). Tools:
+Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go). Authenticate every call with `Authorization: Bearer mmk_…`. Fourteen tools cover the same surface humans see in the web UI; every one routes through the same access checks, scope enforcement, validation, and rate-limit buckets as REST — there is no agent-only fast path.
+
+#### Reading (`read` scope)
 
 | Tool | Purpose |
 |---|---|
-| `list_documents` | Docs the calling identity has touched |
-| `get_document` | Full markdown content + metadata |
-| `list_comments` | Threads on a doc — filter by `open` / `resolved` / `all`, optionally pre-render bodies to HTML |
-| `add_comment` | Anchor a new thread to a verbatim substring of the doc (with `occurrence` to disambiguate matches) |
-| `reply` | Reply to an existing thread |
-| `resolve_comment` / `reopen_comment` | Lifecycle |
-| `revise_with_ai` | Run Claude Opus 4.7 over the doc + selected resolved threads. Preview-only by default; pass `accept: true` to save as a new child doc |
+| `list_documents` | Docs the calling identity has touched. Set `include_trash: true` to include soft-deleted docs. |
+| `get_document` | Full markdown content + metadata, including parent/`rootDocument`/`latestDescendant`, source drift state, and revision index. |
+| `list_comments` | Threads on a doc — filter by `open` / `resolved` / `all`, optionally pre-render bodies to HTML via `render_html: true`. |
+| `list_revisions` | The full revision chain (root → leaf) for a doc with each node's `revisionIndex`, `model`, `generatedBy`, `actorKind`, and timestamps. |
 
-The full agent guide — including conventions, identity model, rate limits, and out-of-scope actions — lives at [`skills/markupmarkdown/SKILL.md`](skills/markupmarkdown/SKILL.md) and is served live at <https://mumd.metavert.io/SKILL.md>.
+#### Commenting (`write` scope)
+
+| Tool | Purpose |
+|---|---|
+| `add_comment` | Anchor a new thread to a **verbatim substring** of the doc. Pass `occurrence: N` (1-based) when the substring appears multiple times. |
+| `reply` | Reply to an existing thread. |
+| `resolve_comment` / `reopen_comment` | Lifecycle. Resolved threads become eligible inputs for `revise_with_ai`. |
+| `patch_anchor` | Re-anchor an orphan comment, or convert any comment to a document-level pin (`doc_level: true`). Mine-only. |
+| `delete_comment` | Remove a thread your token authored. Mine-only — same require-mine guard as REST. |
+
+#### Editing the document (`admin` scope)
+
+| Tool | Purpose |
+|---|---|
+| `edit_document` | Save a new manual revision by sending the full new content. Creates a new child doc; unresolved comments carry forward and are re-anchored against the new content. |
+| `revise_with_ai` | Run Claude Opus 4.7 over the doc + selected resolved threads. Preview-only by default (`accept: false`); pass `accept: true` to save as a new child doc. Uses the **human user's** stored Anthropic key. |
+| `merge_from_github` | Reconcile a doc with its upstream GitHub source via a 3-way Claude merge (ancestor = source the revision was based on, ours = current doc, theirs = new upstream). Persists the merged content and re-anchors comments. Trivial cases bypass Claude. |
+| `push_to_github` | Open a pull request from the doc's current content back to its source repo. PR mode only over MCP — direct-commit is web-UI-only for safety. Only push when a human has explicitly asked. |
+
+The full agent guide — conventions, identity model, rate limits, scope hierarchy, when-to-edit-vs-revise-vs-merge, and out-of-scope actions — lives at [`skills/markupmarkdown/SKILL.md`](skills/markupmarkdown/SKILL.md) and is served live at <https://mumd.metavert.io/SKILL.md>.
 
 ### Examples
+
+All seven examples below are real MCP requests against the live `/mcp` endpoint. Each `"name"` matches the tool in the tables above; `arguments` is the literal payload.
 
 #### 1. Read a doc and its open threads
 
@@ -180,7 +206,8 @@ The full agent guide — including conventions, identity model, rate limits, and
 // → [{ id, title, url, ... }, ...]
 
 { "name": "get_document", "arguments": { "id": "a3f7c2..." } }
-// → { id, title, content, sourceUrl, parentId, ... }
+// → { id, title, content, sourceUrl, parentId, revisionIndex,
+//     rootDocument, latestDescendant, sourceLatestSha, ... }
 
 {
   "name": "list_comments",
@@ -247,6 +274,73 @@ If the quoted text appears multiple times in the doc, the tool returns an error 
 
 The revision uses the **human user's** stored Anthropic key — the agent never sees it and never gets billed.
 
+#### 5. Apply a targeted manual edit (no AI revision)
+
+```jsonc
+// First read the current content so you can splice in your change:
+{ "name": "get_document", "arguments": { "id": "a3f7c2..." } }
+// → { content: "...", revisionIndex: 4, ... }
+
+// Then save the edited content as a new revision in the chain.
+// Unresolved comments carry forward and re-anchor against the new text.
+{
+  "name": "edit_document",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "content": "<the full new markdown>",
+    "revision_note": "Fix the §4.2 scaling claim per Jon's review"
+  }
+}
+// → { newDocumentId: "d9e3f1...", revisionIndex: 5, carriedForward: 3, orphaned: 0 }
+```
+
+Use this when you've decided on a specific change yourself, rather than asking Claude to derive it from resolved threads.
+
+#### 6. Walk the revision chain and find the leaf
+
+```jsonc
+{
+  "name": "list_revisions",
+  "arguments": { "document_id": "a3f7c2..." }
+}
+// → [
+//   { id: "a3f7c2...", revisionIndex: 1, model: "manual", generatedBy: "jon", actorKind: "human" },
+//   { id: "b8c4d1...", revisionIndex: 2, model: "claude-opus-4-7", generatedBy: "jon", actorKind: "human" },
+//   { id: "d9e3f1...", revisionIndex: 3, model: "manual", generatedBy: "claude-code-laptop", actorKind: "agent" }
+// ]
+```
+
+`get_document`'s `latestDescendant` answers the same question with a single call. `list_revisions` is the right choice when you want the full chain (e.g. to show a version picker).
+
+#### 7. Pull in upstream GitHub edits, then push the resolved revision back as a PR
+
+```jsonc
+// 1. The doc's source-drift indicators say upstream changed. Reconcile via 3-way merge:
+{
+  "name": "merge_from_github",
+  "arguments": { "document_id": "a3f7c2..." }
+}
+// → { merged: true, mergedContent: "...", orphanedComments: 1, trivial: false }
+
+// 2. After the human reviews the merge and resolves any conflicts, push the result
+//    back as a pull request. PR mode is the only mode available over MCP — direct
+//    commits are intentionally web-UI-only so branch-protection enforcement stays
+//    a human decision.
+{
+  "name": "push_to_github",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "branch": "claude/wingman-prd-revisions",
+    "commit_message": "PRD: tighten §4.2 scaling claim, address resolved review threads",
+    "pr_title": "PRD revision: scaling claim + resolved review threads",
+    "pr_body": "Applies the comment threads resolved in https://mumd.metavert.io/d/a3f7c2..."
+  }
+}
+// → { mode: "pr", branch: "...", commitSha: "...", commitUrl: "...", prNumber: 142, prUrl: "..." }
+```
+
+Only push when a human has explicitly asked. A resolved comment that says "ship this" counts; a periodic cron does not.
+
 ### REST fallback
 
 Every MCP tool corresponds to a REST endpoint at `/api/...` — the same Bearer token authenticates both. Use REST when you need an endpoint MCP doesn't expose (notifications, trash, SSE event streams) or your runtime isn't MCP-aware.
@@ -277,6 +371,14 @@ GET    /api/documents/:id/comments              ?render=html to include sanitize
 POST   /api/documents/:id/comments              { anchor:{start,end,exact}, body, author }
 POST   /api/documents/:id/sync                  pull latest source from GitHub + auto re-anchor comments
 GET    /api/documents/:id/events                SSE stream — comments-updated + doc-updated events
+
+# Manual editing + GitHub round-trip
+POST   /api/documents/:id/manual-revisions      { content } → new child doc (manual edit save)
+GET    /api/documents/:id/edit-lock             current soft lock holder
+POST   /api/documents/:id/edit-lock             claim the soft edit lock for the doc
+DELETE /api/documents/:id/edit-lock             release the soft edit lock
+GET    /api/documents/:id/pushback/info         GitHub repo + branch info for the push UI
+POST   /api/documents/:id/pushback              { mode: "pr"|"direct", branch, commitMessage, ... }
 GET    /api/documents/:id/mention-candidates    people known to this doc, for @-autocomplete
 
 PATCH  /api/comments/:id                        { body }

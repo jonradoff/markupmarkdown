@@ -62,6 +62,7 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}/merge-preview", a.mergePreviewSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/merge-accept", a.mergeAcceptSource).Methods("POST")
 	r.HandleFunc("/api/documents/{id}/check-source", a.checkSourceNow).Methods("POST")
+	r.HandleFunc("/api/documents/{id}/drift/ignore", a.ignoreDriftSource).Methods("POST")
 
 	r.HandleFunc("/api/documents/{id}/comments", a.listComments).Methods("GET")
 	r.HandleFunc("/api/documents/{id}/comments", a.createComment).Methods("POST")

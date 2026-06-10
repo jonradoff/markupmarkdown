@@ -5,7 +5,9 @@ description: Google-Docs-style commenting on markdown documents. Lets agents and
 
 # markupmarkdown — agent guide
 
-markupmarkdown is a doc-review tool: humans paste markdown URLs, drag-select text, leave inline comments, and resolve threads when settled. Agents do the same things over MCP — they see what humans see, leave comments humans review, and (with human approval) trigger AI revisions that apply the resolved feedback.
+markupmarkdown is a doc-review tool: humans paste markdown URLs, drag-select text, leave inline comments, edit the markdown directly when needed, and push the resolved revision back to GitHub. Agents do the same things over MCP — they read what humans read, leave comments humans review, edit the doc when asked, and (with human approval) trigger AI revisions, merges, or pull requests.
+
+Humans have a native CodeMirror editor with a formatting toolbar, find & replace, and live preview; agents accomplish the same thing programmatically via `edit_document` (full-content replace) or `revise_with_ai` (resolved-comments-driven). When a human is mid-edit, a soft edit lock prevents other writers (human or agent) from clobbering them — `edit_document` and `revise_with_ai` will surface a 409-style "X is editing" if the doc is locked by someone else.
 
 ## Mental model
 
@@ -176,6 +178,51 @@ If `"we may scale linearly"` appears twice in the doc, the tool returns an error
   }
 }
 ```
+
+### Apply a targeted manual edit (no AI revision)
+
+```jsonc
+// Read current content + revision index first so you splice into the right base
+{ "name": "get_document", "arguments": { "id": "a3f7c2..." } }
+// → { content: "...", revisionIndex: 4, ... }
+
+// Save the edited content as a new revision; unresolved comments carry forward.
+{
+  "name": "edit_document",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "content": "<the full new markdown>",
+    "revision_note": "Fix §4.2 scaling claim per Jon's review"
+  }
+}
+// → { newDocumentId: "d9e3f1...", revisionIndex: 5, carriedForward: 3, orphaned: 0 }
+```
+
+Prefer `edit_document` over `revise_with_ai` when **you** decided on a specific change rather than asking Claude to derive it from resolved threads. Always check `orphaned`: a non-zero count means some comments lost their anchor on the new content; either re-anchor with `patch_anchor` or leave them for the human.
+
+### Pull in upstream GitHub edits and push the revision back
+
+```jsonc
+// 1. Source drift detected (get_document.sourceDriftedAt set). Run the 3-way merge:
+{ "name": "merge_from_github", "arguments": { "document_id": "a3f7c2..." } }
+// → { merged: true, mergedContent: "...", orphanedComments: 1, trivial: false }
+
+// 2. After the human reviews the merged content + resolves any orphans,
+//    open a PR back to the source repo. PR mode is the only mode over MCP.
+{
+  "name": "push_to_github",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "branch": "claude/wingman-prd-revisions",
+    "commit_message": "PRD: tighten §4.2 scaling claim",
+    "pr_title": "PRD revision: scaling claim + resolved review threads",
+    "pr_body": "Applies threads resolved in https://mumd.metavert.io/d/a3f7c2..."
+  }
+}
+// → { mode: "pr", branch: "...", commitSha: "...", prNumber: 142, prUrl: "..." }
+```
+
+Only call `push_to_github` when a human has explicitly asked.
 
 ## The revision chain
 

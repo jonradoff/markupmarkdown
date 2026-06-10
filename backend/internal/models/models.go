@@ -53,6 +53,12 @@ type Document struct {
 	// from the latest content (or dismisses the banner).
 	SourceLatestSHA string     `bson:"source_latest_sha,omitempty" json:"sourceLatestSha,omitempty"`
 	SourceDriftedAt *time.Time `bson:"source_drifted_at,omitempty" json:"sourceDriftedAt,omitempty"`
+	// SourceDriftIgnoredSHA records an upstream blob SHA the user
+	// explicitly dismissed via the drift banner's "Ignore" button. The
+	// banner stays suppressed for that SHA — and only that SHA. If a
+	// *newer* upstream SHA shows up, the banner returns so the user
+	// gets a chance to act on the latest change.
+	SourceDriftIgnoredSHA string `bson:"source_drift_ignored_sha,omitempty" json:"sourceDriftIgnoredSha,omitempty"`
 
 	// Revision chain. A non-empty ParentID means this doc was created by
 	// applying resolved comments from the parent via the AI revision feature.

@@ -139,13 +139,17 @@ export default function HomePage() {
   return (
     <div className="max-w-4xl mx-auto px-6 py-10">
       <h1 className="text-3xl font-semibold tracking-tight mb-2">
-        Google-Docs-style commenting for any Markdown file
+        Google Docs for Markdown — edit, comment, and ship <code className="bg-soft px-1 rounded">.md</code> files
       </h1>
       <p className="text-muted mb-8">
-        Paste a GitHub URL or upload a <code className="bg-soft px-1 rounded">.md</code>{" "}
-        file. Drag-select text to leave a margin comment — threaded
-        replies, @-mentions, realtime sync, AI revision via Claude, and an
-        MCP server so agents review alongside humans.
+        Paste a GitHub URL or upload a{" "}
+        <code className="bg-soft px-1 rounded">.md</code> file. Drag-select
+        text for margin comments, or click <em>Edit</em> for a native
+        markdown editor with formatting toolbar, find &amp; replace, and
+        live preview. Push your changes back to GitHub as a pull request
+        or direct commit. Threaded replies, @-mentions, realtime sync, AI
+        revision via Claude, and an MCP server so agents review alongside
+        humans.
       </p>
 
       <div className="bg-card border border-rule rounded-lg p-5 mb-6">
@@ -347,12 +351,34 @@ function MarketingSections() {
         </h2>
         <p className="text-muted">
           Markdown is where a lot of real product thinking lives — but the
-          tools for reviewing it are miserable. GitHub PRs force every
-          discussion through a code-review workflow. Pasting into Google Docs
-          drops your formatting. Markupmarkdown brings Google-Docs-style
-          margin comments directly to your <code className="bg-soft px-1 rounded">.md</code>{" "}
-          files, without dragging anyone into a code-review process they
-          don't want.
+          tools for reviewing <em>and editing</em> it are miserable. GitHub
+          PRs force every discussion through a code-review workflow. Pasting
+          into Google Docs drops your formatting and creates a second source
+          of truth. Markupmarkdown brings Google-Docs-style margin comments
+          and a native markdown editor directly to your{" "}
+          <code className="bg-soft px-1 rounded">.md</code> files — and
+          because edits happen on the actual markdown (not a visual mirror),
+          the file in your repo stays the source of truth. One click pushes
+          your revision back to GitHub as a pull request or a direct commit.
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold mb-2">
+          A real markdown editor, with GitHub round-trip built in
+        </h2>
+        <p className="text-muted">
+          Click <em>Edit</em> for a CodeMirror 6 editor with syntax
+          highlighting, a formatting toolbar (bold, italic, code, headings,
+          lists, links, code blocks, blockquote, HR), find &amp; replace with
+          regex, light/dark theme, and a live side-by-side preview.
+          <code className="bg-soft px-1 rounded">⌘S</code> saves your changes
+          as a new revision so the version history forms a tree. Comments
+          stay anchored to their text spans as you edit. When you're done,
+          click <em>Push to GitHub</em> to open a pull request from a new
+          branch (prefilled title and body) or commit directly to a branch
+          you pick — branch-protection rules are enforced on GitHub's side
+          and surfaced verbatim if they reject the push.
         </p>
       </div>
 
@@ -407,6 +433,29 @@ function MarketingSections() {
               document and click the Comment button that floats next to your
               selection. Threaded replies, @-mentions, mark-as-done, and
               reopen are one click each.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Can I edit the markdown directly?</dt>
+            <dd className="text-muted mt-1">
+              Yes. Click <em>Edit</em> and you get a CodeMirror 6 editor with
+              syntax highlighting, a sticky formatting toolbar (bold, italic,
+              code, headings, lists, task lists, blockquote, link, code
+              block, HR), find &amp; replace with regex, light/dark theme,
+              and a live preview.{" "}
+              <code className="bg-soft px-1 rounded">⌘S</code> saves a new
+              revision; comments stay anchored as you edit.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Can I push my edits back to GitHub?</dt>
+            <dd className="text-muted mt-1">
+              Yes. For docs cloned from a GitHub blob URL, click{" "}
+              <em>Push to GitHub</em>. Choose between opening a pull request
+              from a new branch (with prefilled title and body) or committing
+              directly to a branch like <code className="bg-soft px-1 rounded">main</code>.
+              The OAuth token from your sign-in does the work — no separate
+              GitHub PAT needed.
             </dd>
           </div>
           <div>

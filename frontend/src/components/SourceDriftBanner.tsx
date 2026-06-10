@@ -8,6 +8,10 @@ interface Props {
   /** Opens the merge modal. For non-revisions it's a trivial replace;
    * for revisions it runs the 3-way Claude merge with a preview. */
   onMerge: () => void;
+  /** Opens the Ignore-this-drift confirmation modal. Dismissed drifts
+   * stay suppressed until a *newer* upstream SHA appears. Same gating
+   * as onMerge — surfaced only when canSync is true. */
+  onIgnore: () => void;
   /** True when this doc is an AI revision (has revision_meta). The
    * banner copy adapts to explain the merge will reconcile both
    * branches' edits. */
@@ -23,6 +27,7 @@ export default function SourceDriftBanner({
   driftedAt,
   canSync,
   onMerge,
+  onIgnore,
   isRevision,
 }: Props) {
   const when = driftedAt
@@ -102,6 +107,16 @@ export default function SourceDriftBanner({
           >
             View latest on GitHub
           </a>
+          {canSync && (
+            <button
+              onClick={onIgnore}
+              className="text-xs ml-2 underline hover:no-underline"
+              style={{ color: "var(--color-warn-muted)" }}
+              title="Hide this banner until a newer upstream commit shows up"
+            >
+              Ignore
+            </button>
+          )}
         </div>
       </div>
     </div>

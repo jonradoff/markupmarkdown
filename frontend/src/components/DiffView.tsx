@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import MarkdownRender from "./MarkdownRender";
 import { computeDiff, type DiffHunk, type DiffLine, type InlineSegment } from "../utils/diff";
 
@@ -16,6 +16,38 @@ export default function DiffView({ original, revised, baseUrl }: Props) {
     () => computeDiff(original, revised),
     [original, revised]
   );
+  // Refs to each hunk's outer div so Prev/Next can scroll the right
+  // one into view inside the diff scroll container. Cleared on every
+  // render so removed hunks don't leak stale node refs.
+  const hunkRefs = useRef<(HTMLDivElement | null)[]>([]);
+  hunkRefs.current = [];
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  // Track which hunk is "active" so Prev/Next have a known starting
+  // point. Defaults to the first hunk; bumped by either button.
+  const [activeHunk, setActiveHunk] = useState(0);
+
+  const scrollToHunk = useCallback((i: number) => {
+    const el = hunkRefs.current[i];
+    const scroller = scrollerRef.current;
+    if (!el || !scroller) return;
+    // Manual computation rather than scrollIntoView so the hunk lands
+    // below the sticky toolbar (which is INSIDE the scroller, so the
+    // hunk's "top" must clear it). 44px ≈ toolbar height.
+    const elRect = el.getBoundingClientRect();
+    const sRect = scroller.getBoundingClientRect();
+    const offsetTop = elRect.top - sRect.top + scroller.scrollTop;
+    scroller.scrollTo({ top: Math.max(0, offsetTop - 44), behavior: "smooth" });
+    setActiveHunk(i);
+  }, []);
+
+  const nextHunk = useCallback(() => {
+    if (stats.hunks === 0) return;
+    scrollToHunk((activeHunk + 1) % stats.hunks);
+  }, [activeHunk, stats.hunks, scrollToHunk]);
+  const prevHunk = useCallback(() => {
+    if (stats.hunks === 0) return;
+    scrollToHunk((activeHunk - 1 + stats.hunks) % stats.hunks);
+  }, [activeHunk, stats.hunks, scrollToHunk]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -29,6 +61,27 @@ export default function DiffView({ original, revised, baseUrl }: Props) {
           <span>
             {stats.hunks} {stats.hunks === 1 ? "change" : "changes"}
           </span>
+          {view === "diff" && stats.hunks > 0 && (
+            <span className="flex items-center gap-1">
+              <button
+                onClick={prevHunk}
+                className="px-2 py-0.5 rounded border border-rule text-muted hover:text-ink hover:bg-soft disabled:opacity-40"
+                title="Previous change (jump to the prior diff hunk)"
+              >
+                ‹ Prev
+              </button>
+              <button
+                onClick={nextHunk}
+                className="px-2 py-0.5 rounded border border-rule text-muted hover:text-ink hover:bg-soft disabled:opacity-40"
+                title="Next change (jump to the next diff hunk)"
+              >
+                Next ›
+              </button>
+              <span className="text-faint">
+                {activeHunk + 1} / {stats.hunks}
+              </span>
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 text-xs">
           <ViewTab active={view === "diff"} onClick={() => setView("diff")}>
@@ -40,7 +93,7 @@ export default function DiffView({ original, revised, baseUrl }: Props) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-auto">
         {view === "diff" ? (
           stats.hunks === 0 ? (
             <div className="p-10 text-center text-muted text-sm">
@@ -48,7 +101,7 @@ export default function DiffView({ original, revised, baseUrl }: Props) {
               resolved comments.
             </div>
           ) : (
-            <UnifiedDiff hunks={hunks} />
+            <UnifiedDiff hunks={hunks} hunkRefs={hunkRefs} activeHunk={activeHunk} />
           )
         ) : (
           <div className="p-6 max-w-3xl mx-auto">
@@ -82,7 +135,15 @@ function ViewTab({
   );
 }
 
-function UnifiedDiff({ hunks }: { hunks: DiffHunk[] }) {
+function UnifiedDiff({
+  hunks,
+  hunkRefs,
+  activeHunk,
+}: {
+  hunks: DiffHunk[];
+  hunkRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  activeHunk: number;
+}) {
   return (
     <div className="font-mono text-[12px] leading-[1.55]">
       {hunks.map((hunk, i) => {
@@ -92,9 +153,25 @@ function UnifiedDiff({ hunks }: { hunks: DiffHunk[] }) {
         const headLineNew =
           head?.newLineNumber ?? head?.oldLineNumber ?? "?";
         return (
-          <div key={i} className="mb-4">
-            <div className="px-3 py-1 bg-soft text-muted text-[11px] border-y border-rule sticky top-0 z-10">
+          <div
+            key={i}
+            ref={(el) => {
+              hunkRefs.current[i] = el;
+            }}
+            className="mb-4"
+          >
+            <div
+              className={[
+                "px-3 py-1 text-[11px] border-y border-rule sticky top-0 z-10",
+                i === activeHunk
+                  ? "bg-accent-soft text-accent font-medium"
+                  : "bg-soft text-muted",
+              ].join(" ")}
+            >
               @@ −{headLineOld}, +{headLineNew} @@
+              <span className="ml-2 text-faint font-normal">
+                {i + 1} of {hunks.length}
+              </span>
             </div>
             <div>
               {hunk.lines.map((line, j) => (

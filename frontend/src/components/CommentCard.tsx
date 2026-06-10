@@ -178,6 +178,7 @@ export default function CommentCard({
     <div
       ref={cardRef}
       data-comment-id={comment.id}
+      data-active={active ? "true" : "false"}
       onClick={onActivate}
       className={[
         "bg-card border rounded-lg shadow-sm p-3 cursor-pointer transition",

@@ -8,6 +8,85 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Prev/Next hunk navigation in the diff viewer.** Both the
+  AI-revise preview and the 3-way merge diff get a `‹ Prev / Next ›`
+  pair plus a `N / total` counter in the diff toolbar. Each press
+  smooth-scrolls the next changed section's sticky header to the top
+  of the scroller (cleared for the diff toolbar's height), and the
+  current hunk gets an accent-tinted header so it's obvious where you
+  are. The "Rendered" tab hides the controls — they're meaningful
+  only on the unified diff. Scratches the "I have to manually scroll
+  to find each change" itch on long docs.
+- **`Ignore` button on the source-drift banner.** Dismisses the
+  banner for the *current* upstream SHA only — if a newer upstream
+  commit shows up later, the banner returns. Pops a confirmation
+  modal that spells out the implication ("we'll stop nudging you to
+  merge, but a newer commit re-surfaces the banner") so it's not a
+  one-click footgun. Backed by a new
+  `POST /api/documents/:id/drift/ignore` endpoint that stamps a
+  `sourceDriftIgnoredSha` on the chain root; the existing
+  `SetDocumentSourceCheck` clears the marker as soon as upstream
+  moves past the ignored SHA.
+
+### Changed
+
+- **Direct-commit pushback clears the drift banner.** After a
+  successful direct commit to the doc's tracking branch (the same
+  ref the doc was cloned from), the pushback handler stamps the new
+  blob SHA as the doc's `SourceSHA` baseline and broadcasts a
+  `doc-updated` event. The next drift check sees us in sync and the
+  banner disappears. PR mode + commits to non-tracking branches
+  intentionally don't clear drift (the PR isn't merged; a sibling
+  branch doesn't affect the tracked ref).
+
+### Fixed
+
+- **Native markdown editor.** Click *Edit* on any doc for a CodeMirror 6
+  editor with markdown syntax highlighting, light/dark theme (tracks the
+  app theme automatically), and `⌘S` to save your changes as a new
+  revision. The editor runs in the same page scroll as view mode — no
+  scroll-in-scroll. Comments stay anchored to their text spans as you
+  edit; the sidebar tracks the same lines in real time.
+- **Sticky formatting toolbar.** Bold, italic, code, H1/H2/H3, bulleted
+  list, numbered list, task list, blockquote, link, code block, HR. Both
+  the action bar (Editing / Save / Cancel / Find / Show preview) and the
+  formatting controls share one sticky frame that pins to the top of the
+  editor column as you scroll through long documents.
+- **Find & replace** inside the editor (`⌘F`) with regex, case sensitivity,
+  whole-word, and replace-all — the standard CodeMirror search panel.
+- **Live side-by-side preview.** Toggle *Show preview* to render the
+  document on the right as you edit on the left.
+- **Smart wrap-toggle.** Selecting `**bold**` (with the markers included)
+  and clicking *B* strips one layer instead of doubling up — for bold,
+  italic, and code. Catches the common selection-overshoot pattern most
+  markdown editors get wrong.
+- **Push to GitHub.** For docs cloned from a GitHub blob URL, click *Push
+  to GitHub* on any revision. Two modes: **open a pull request** from a
+  new branch (with prefilled title + body that reference the doc), or
+  **commit directly** to a branch you pick (typically `main`). The OAuth
+  token from your sign-in does the work — no separate PAT needed. Branch
+  protection rules are enforced on GitHub's side and surfaced verbatim if
+  they reject the push.
+- **Manual revision API.** New endpoint
+  `POST /api/documents/:id/manual-revisions` writes editor saves as a new
+  child doc, parented to the source doc — manual edits and AI revisions
+  share the same versioning model.
+- **Soft edit lock.** Whoever clicks *Edit* first holds the lock; other
+  viewers see a banner with the holder's display name and the Edit button
+  disabled. Lock auto-releases on Save / Cancel / disconnect, broadcasts
+  over the existing SSE hub.
+- **3-way merge engine.** When a doc has unsynced upstream changes AND
+  local edits, the merge UI runs a 3-way diff against the original, the
+  upstream version, and the local version — surfacing clean merges,
+  manual conflicts, and a per-region pick-a-side UI.
+- **Comments carry through AI revision.** Resolved comments applied via
+  *Revise with AI* keep their threads on the new child doc, re-anchored
+  against the revised text where the quoted span still appears.
+- **MCP Tier 1 + Tier 2 tools.** Agents can now `edit_document`,
+  `patch_comment_anchor`, `delete_comment`, `list_revisions`,
+  `merge_document`, and `push_to_github` — the same actions the human UI
+  exposes, with the same access checks, scope enforcement, and rate
+  limits.
 - **GitHub source-change detection** — for docs cloned from GitHub, every
   open shows a banner the moment the upstream file has new commits.
   Comments still pinned to text that survived the edit are auto re-anchored
@@ -54,6 +133,64 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Active comment text is now highlighted in the editor.** Pressing Next
+  in edit mode paints the matched span with the same yellow background
+  the view-mode rendered markdown uses — implemented as a CodeMirror
+  StateField + Decoration that's driven by a `setActiveHighlight` state
+  effect. The old "set a text selection" gesture wasn't visible enough
+  (especially in dark mode and on an unfocused editor) and could be lost
+  to keyboard navigation.
+- **`Next` reliably scrolls to the next comment.** Two compounding causes
+  fixed: (a) both the Document.tsx `activeId` effect and EditorPane's
+  internal effect were calling `window.scrollTo`, fighting over the
+  smooth-scroll target; (b) CodeMirror uses estimated line heights for
+  content outside its render viewport, so a single `coordsAtPos` read
+  could be tens to hundreds of pixels off. Now there's exactly one
+  scroll driver (`scrollAnchorIntoView` on the editor handle), and it
+  takes a two-pass measurement: an instant nudge to the estimated
+  target, then a smooth-scroll to the authoritative position once CM
+  has had a frame to refine its height map. The page lands on the
+  active comment's line every click.
+- **Stacked off-viewport cards no longer push the active card off its
+  anchor.** The cards-layout pass now filters to comments whose anchor
+  is within ±200 px of the viewport (plus the active card unconditionally).
+  Previously, a comment anchored above the viewport would clamp to
+  `minTop = 0` and stack with every other above-viewport card; their
+  combined height pushed the active comment's card hundreds of pixels
+  below its highlighted span.
+- **Card runaway on `Next` in edit mode.** Pressing Next would scroll the
+  body so the editor anchor landed at the viewport, but the comment cards
+  would march off into ever-larger `style.top` values, landing in empty
+  space tens of thousands of pixels below the doc. Three compounding
+  causes: (1) the sidebar's scroll-into-view fed `sidebar.scrollTop` back
+  into `containerRect.top`, which amplified `desiredTop` on the next
+  layout; (2) the anchored-cards container's `minHeight` grew with each
+  pass, making the sidebar internally scrollable so the loop could
+  continue; and (3) MCP-added agent comments all store `anchor.start = 0`
+  (text-substring anchoring resolved at render time), so the layout's
+  sort fell through to insertion order — a card anchored near the top of
+  the doc was stacked below cards anchored further down because it was
+  inserted later. Fixes: dropped the sidebar scroll-into-view (the
+  body-scroll already brings the right card into view), and the
+  cards-layout pass now sorts by editor-anchor Y before relaxing.
+- **Content column expands with the browser.** Removed the `max-w-3xl`
+  cap (1024px effective) on the document column — view mode now uses
+  `max-w-5xl`, edit mode uses `max-w-none`. The editor fills whatever
+  space you give it, instead of wrapping early in a narrow strip and
+  leaving the rest of the column blank.
+- **Sticky toolbar pins correctly in long docs.** The action + formatting
+  bar wasn't actually sticking in edit mode because the editor lived
+  inside an `overflow-y-auto` column — CSS sticky bound to the column,
+  not the viewport, so scrolling the page slid the bar off-screen.
+  Removed the inner column scroll, made the comment sidebar
+  viewport-sticky instead, and re-laid out anchored cards on body scroll
+  via an rAF-throttled scroll listener.
+- **Comment cards align with their highlighted line in edit mode.** The
+  layout formula now computes `desiredTop` against the anchored container's
+  bounding rect, so the math is identical for view mode and edit mode.
+- **Edit-mode active-comment scroll.** Clicking *Next* on a comment now
+  asks CodeMirror to scroll the anchored line into view in edit mode
+  (instead of silently no-oping because the rendered DOM is gone).
 - Comments whose quoted text spanned a Markdown formatting marker
   (`**bold**`, etc.) were incorrectly orphaned on Sync even when the
   underlying text was unchanged. Now matched against the rendered text.

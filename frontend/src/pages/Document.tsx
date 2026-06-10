@@ -265,14 +265,33 @@ export default function DocumentPage() {
     const sbBox = sidebar.getBoundingClientRect();
     const container = anchorsContainerRef.current;
     if (!container) return;
-    // The cards live absolutely-positioned inside `container`, so
-    // their `top: N` maps to viewport y = containerRect.top + N.
-    // Anchoring N off the container's bounding rect (which already
-    // accounts for sticky headers, doc-level / orphan sections,
-    // padding, AND sidebar scroll) means we don't have to hand-
-    // calculate any of that — and the formula stays identical for
-    // edit mode and view mode.
+    // We anchor cards in VIEWPORT coordinates. The container itself is
+    // inside the sidebar's scroll — but the sidebar is sticky
+    // (top-0 h-screen) so its outer box is stable in the viewport and
+    // doesn't depend on sidebar.scrollTop. Reading containerRect.top
+    // here used to feed sidebar.scrollTop into the formula, which made
+    // every Next click amplify the previous scroll: cards marched off
+    // into space. By computing card.style.top off sbBox.top (and an
+    // offset for header/nav so the math composes with sidebar.scrollTop
+    // when there's no scroll yet) the layout stays stable.
+    //
+    // desiredTop is in container-local coordinates. The container sits
+    // inside sidebar.scrollTop; once the layout is committed we DON'T
+    // re-scroll the sidebar in response, so containerRect.top stays
+    // equal to sbBox.top + (offset of container within sidebar's
+    // unscrolled flow). That offset is approximately
+    // topHeaderH + navBarH + (doc-level / orphan section heights), and
+    // it's stable across Next clicks because those sections don't
+    // change height when activeId moves.
     const containerRect = container.getBoundingClientRect();
+    const vh = window.innerHeight;
+    // Only lay out cards whose anchor is near the current viewport.
+    // Cards whose anchors are far above/below the viewport would
+    // either pile up at the top edge (pushing the active card down)
+    // or render off-screen below — neither is useful, and they make
+    // relaxAnchors fight with the active card. The active card is
+    // always included so the user has something to look at even when
+    // its anchor has scrolled just out of view between clicks.
     const items = visibleComments
       .map((c) => {
         let top: number | null = null;
@@ -288,6 +307,9 @@ export default function DocumentPage() {
           top = rect.top;
         }
         if (top == null) return null;
+        const inRange = top >= -200 && top <= vh + 200;
+        const isActive = c.id === activeId;
+        if (!inRange && !isActive) return null;
         const wrapper = cardRefs.current[c.id];
         const height = wrapper?.offsetHeight ?? 120;
         return {
@@ -318,16 +340,39 @@ export default function DocumentPage() {
     const padded = items.map((it) =>
       it.desiredTop < minTop ? { ...it, desiredTop: minTop } : it
     );
+    // Sort items by their editor-anchor position before relaxing.
+    // visibleComments is sorted by anchor.start, but MCP-added agent
+    // comments all store anchor.start = 0 — they're resolved by quoted
+    // text at render time. Without this sort, relaxAnchors would stack
+    // them in creation order rather than document order, pushing a card
+    // whose anchor is near the top of the doc all the way to the bottom
+    // of the sidebar's flow.
+    padded.sort((a, b) => a.desiredTop - b.desiredTop);
     setCardTops(relaxAnchors(padded, 12));
   }, [doc, comments, activeId, filter, layoutTick, topHeaderH, navBarH, editing]);
 
-  // Trigger a re-measure when the window resizes (column widths change
-  // → highlight Y positions change). Bumping layoutTick is the explicit
-  // dependency the layout effect watches.
+  // Trigger a re-measure when the window resizes OR the page scrolls
+  // (the document column scrolls the body now — highlight Y positions
+  // change relative to the sticky sidebar each scroll tick). Bumping
+  // layoutTick is the explicit dependency the layout effect watches.
+  // rAF-throttled so we don't queue a state update per scroll event.
   useEffect(() => {
-    const onResize = () => setLayoutTick((n) => n + 1);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    let queued = false;
+    const tick = () => {
+      queued = false;
+      setLayoutTick((n) => n + 1);
+    };
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(tick);
+    };
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule);
+    };
   }, []);
 
   // Source-drift + access re-verification check. Fires:
@@ -356,6 +401,7 @@ export default function DocumentPage() {
                 sourceSha: res.sourceSha ?? prev.sourceSha,
                 sourceLatestSha: res.sourceLatestSha ?? "",
                 sourceDriftedAt: res.sourceDriftedAt ?? undefined,
+                sourceDriftIgnoredSha: res.sourceDriftIgnoredSha ?? "",
                 rootDocument: res.rootDocument ?? prev.rootDocument,
               }
             : prev
@@ -700,6 +746,55 @@ export default function DocumentPage() {
     }
   }
 
+  // Called by the SourceDriftBanner's "Ignore" button. Pops a
+  // confirmation modal explaining what's about to happen, then calls
+  // the backend to stamp this upstream SHA as ignored. Local doc
+  // state is updated optimistically + with the server's authoritative
+  // response so the banner disappears immediately.
+  async function confirmIgnoreDrift() {
+    if (!id || !doc?.sourceLatestSha) return;
+    const ok = await dialog.confirm({
+      title: "Ignore this upstream change?",
+      body: (
+        <div className="space-y-2 text-sm">
+          <p>
+            We'll stop showing the <em>"Source updated on GitHub"</em> banner
+            for the current upstream commit. Your stored copy stays as it is
+            — we just won't keep nudging you to merge it in.
+          </p>
+          <p>
+            If a <em>newer</em> upstream commit shows up later, the banner
+            comes back so you get a chance to act on the latest change.
+          </p>
+          <p className="text-muted">
+            This affects how the doc is presented to every viewer.
+          </p>
+        </div>
+      ),
+      confirmLabel: "Ignore for now",
+      cancelLabel: "Keep showing",
+    });
+    if (!ok) return;
+    try {
+      const res = await api.ignoreSourceDrift(id);
+      setDoc((prev) =>
+        prev
+          ? {
+              ...prev,
+              sourceSha: res.sourceSha ?? prev.sourceSha,
+              sourceLatestSha: res.sourceLatestSha ?? "",
+              sourceDriftedAt: res.sourceDriftedAt ?? undefined,
+              sourceDriftIgnoredSha:
+                res.sourceDriftIgnoredSha ?? doc.sourceLatestSha,
+            }
+          : prev
+      );
+      toast.success("Drift banner hidden. We'll let you know if upstream moves again.");
+    } catch (err) {
+      toastError(err, "Couldn't ignore this drift.");
+    }
+  }
+
   // Enter manual re-anchor mode for an orphan comment.
   function startReanchor(c: Comment) {
     setReanchorTarget(c);
@@ -937,8 +1032,15 @@ export default function DocumentPage() {
   const openCount = comments.filter((c) => !c.resolved).length;
   const resolvedCount = comments.filter((c) => c.resolved).length;
   const unreadCount = comments.filter(isUnread).length;
+  // Drift is present when upstream's latest SHA differs from our
+  // baseline AND the user hasn't explicitly dismissed *this* SHA. The
+  // backend clears sourceDriftIgnoredSha as soon as upstream moves to
+  // a newer SHA — so a fresh upstream commit always re-surfaces the
+  // banner, even after a prior Ignore.
   const driftPresent = Boolean(
-    doc?.sourceLatestSha && doc.sourceLatestSha !== doc?.sourceSha
+    doc?.sourceLatestSha &&
+      doc.sourceLatestSha !== doc?.sourceSha &&
+      doc.sourceLatestSha !== doc?.sourceDriftIgnoredSha
   );
 
   async function handleReviseClick() {
@@ -972,9 +1074,22 @@ export default function DocumentPage() {
     downloadAsMarkdown(doc.title, doc.content);
   }
 
-  // Scroll markdown to bring highlight into view when activeId changes
+  // Scroll markdown to bring highlight into view when activeId changes.
+  // In edit mode the rendered DOM is gone — ask CodeMirror to scroll
+  // its anchored line into the viewport instead. The page scroll IS
+  // the editor's scroll now (cm-scroller overflow: visible) so this
+  // moves the body just like the view-mode branch.
   useEffect(() => {
-    if (!activeId || !contentRef.current) return;
+    if (!activeId) return;
+    if (editing) {
+      const c = comments.find((x) => x.id === activeId);
+      const exact = c?.anchor?.exact || c?.originalExact || "";
+      if (exact && editorRef.current) {
+        editorRef.current.scrollAnchorIntoView(exact);
+      }
+      return;
+    }
+    if (!contentRef.current) return;
     const rect = getHighlightRect(contentRef.current, activeId);
     if (!rect) return;
     const margin = 100;
@@ -984,38 +1099,16 @@ export default function DocumentPage() {
         behavior: "smooth",
       });
     }
-  }, [activeId]);
+  }, [activeId, editing, comments]);
 
-  // Sidebar: scroll the active comment WRAPPER (card + Prev/Next
-  // strip beneath it) fully into view. CommentCard used to do its
-  // own scrollIntoView on the card alone, which left the Prev/Next
-  // controls just below the fold. We scroll the wrapper instead so
-  // the controls land on-screen with the card.
-  useEffect(() => {
-    if (!activeId) return;
-    const sb = sidebarRef.current;
-    const wrap = cardRefs.current[activeId];
-    if (!sb || !wrap) return;
-    // Use raf so this fires after the layout effect that positioned
-    // the card via cardTops — otherwise we'd be scrolling against
-    // pre-layout offsets.
-    const id = requestAnimationFrame(() => {
-      const sbRect = sb.getBoundingClientRect();
-      const wRect = wrap.getBoundingClientRect();
-      const above = wRect.top - sbRect.top;
-      const below = wRect.bottom - sbRect.bottom;
-      const headroom = topHeaderH + navBarH + 8;
-      if (above < headroom) {
-        sb.scrollBy({ top: above - headroom, behavior: "smooth" });
-      } else if (below > -8) {
-        // Bring the bottom up to the visible area (with a small
-        // padding) — this is what fixes the "Prev/Next is just
-        // off-screen" annoyance.
-        sb.scrollBy({ top: below + 16, behavior: "smooth" });
-      }
-    });
-    return () => cancelAnimationFrame(id);
-  }, [activeId, cardTops, topHeaderH, navBarH]);
+  // The sidebar no longer scrolls internally for anchored cards (cards
+  // live in viewport coordinates and follow the page scroll). Scrolling
+  // the editor anchor into view via scrollAnchorIntoView is what brings
+  // the matching card on-screen. We intentionally don't run a sidebar
+  // scrollIntoView here — doing so created a feedback loop where the
+  // sidebar's own scroll shifted the cards' containerRect, which
+  // shifted desiredTop on the next layout pass, which made the cards
+  // march off into space.
 
   // Move active comment by `dir` (-1 prev, +1 next). Wraps at the ends so
   // pressing Next on the last comment goes back to the first.
@@ -1132,10 +1225,16 @@ export default function DocumentPage() {
   const me = getAuthor();
 
   return (
-    <div className="flex h-full">
-      {/* Main content */}
-      <div className="flex-1 min-w-0 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-8 py-8">
+    <div className="flex min-h-full">
+      {/* Main content — uses the page-level (body) scroll, not its own
+          inner scroller. The sticky editor toolbar pins to the viewport
+          as the user scrolls through a long document. Width fills the
+          available space minus the comment sidebar; we cap the inner
+          reading column when the browser is very wide so line length
+          stays comfortable, but otherwise we want the editor to use
+          every pixel the user has given us. */}
+      <div className="flex-1 min-w-0">
+        <div className={`mx-auto px-8 py-8 ${editing ? "max-w-none" : "max-w-5xl"}`}>
           <DocumentToolbar
             doc={doc}
             me={me}
@@ -1156,6 +1255,7 @@ export default function DocumentPage() {
               driftedAt={doc.sourceDriftedAt}
               canSync={!!user}
               onMerge={() => setShowMerge(true)}
+              onIgnore={confirmIgnoreDrift}
               isRevision={Boolean(doc.parentId || doc.revisionMeta)}
             />
           )}
@@ -1251,10 +1351,16 @@ export default function DocumentPage() {
         </div>
       </div>
 
-      {/* Comment sidebar */}
+      {/* Comment sidebar — sticks to the viewport. Internal scroll is
+          allowed for the linear sections (doc-level pins / orphans /
+          composer) but the anchored cards live in viewport space and
+          follow the page scroll. The card layout (see useLayoutEffect
+          above) explicitly avoids reading the cards-container's
+          viewport rect so internal sidebar scroll never feeds back into
+          card positioning. */}
       <aside
         ref={sidebarRef}
-        className="w-96 shrink-0 border-l border-rule bg-card overflow-y-auto"
+        className="w-96 shrink-0 border-l border-rule bg-card overflow-y-auto sticky top-0 h-screen self-start"
       >
         {/* Top header: All docs link + filter pills. Sticks at the top
             of the sidebar so it's always reachable. */}
@@ -1574,8 +1680,20 @@ export default function DocumentPage() {
         <PushbackModal
           doc={doc}
           onClose={() => setShowPushback(false)}
-          onPushed={() => {
-            /* toast handled inside modal */
+          onPushed={async () => {
+            // A direct-commit pushback to the doc's tracking branch
+            // means our content IS the new upstream. Refetch so the
+            // drift banner clears immediately (the backend stamped
+            // the new blob SHA as our SourceSHA). PR mode + commits
+            // to other branches are harmless to refetch — the doc
+            // state just round-trips.
+            if (!id) return;
+            try {
+              const next = await api.getDocument(id);
+              setDoc(next);
+            } catch {
+              /* non-fatal — the SSE doc-updated event will catch us up */
+            }
           }}
         />
       )}

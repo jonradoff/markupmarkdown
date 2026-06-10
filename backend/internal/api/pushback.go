@@ -184,6 +184,18 @@ func (a *API) pushback(w http.ResponseWriter, r *http.Request) {
 			a.writePushbackError(w, r, err, "Couldn't commit directly to "+targetBranch+". Your repo may protect this branch.")
 			return
 		}
+		// If we committed straight to the branch the doc tracks, the
+		// freshly-pushed blob IS the new "current upstream" — stamp it
+		// as the doc's SourceSHA so the next drift check sees us in
+		// sync. Without this the banner sticks around telling the user
+		// the source has changed, even though the change was theirs.
+		// PR mode + non-tracking branches don't qualify: a PR's commit
+		// isn't merged yet, and a commit to a different branch doesn't
+		// affect the ref we track.
+		if put.Content.SHA != "" && refsMatch(targetBranch, doc.GitHubRef) {
+			_ = a.store.UpdateDocumentSourceSHA(r.Context(), doc.ID, put.Content.SHA)
+			go a.hub.Broadcast(doc.ID, "doc-updated")
+		}
 		writeJSON(w, http.StatusOK, pushbackResponse{
 			Mode:      "direct",
 			Branch:    targetBranch,
@@ -256,6 +268,19 @@ func (a *API) pushback(w http.ResponseWriter, r *http.Request) {
 		PRNumber:  pr.Number,
 		PRURL:     pr.HTMLURL,
 	})
+}
+
+// refsMatch reports whether branch a and ref b refer to the same
+// branch. GitHub URLs sometimes carry `refs/heads/<name>` while the
+// pushback request supplies the bare branch name; this helper smooths
+// over either form.
+func refsMatch(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a = strings.TrimPrefix(a, "refs/heads/")
+	b = strings.TrimPrefix(b, "refs/heads/")
+	return a == b
 }
 
 // lookupFileSHA returns the blob SHA of path on branch, or "" if
