@@ -26,9 +26,9 @@ import (
 // --- EditDocument ---
 
 func (a *API) EditDocument(ctx context.Context, userID, docID, content, tokenID, agentLabel string) (*models.Document, error) {
-	parent, err := a.store.GetDocument(ctx, docID)
-	if err != nil || parent == nil {
-		return nil, errors.New("document not found")
+	parent, err := a.mcpDocAccess(ctx, userID, docID)
+	if err != nil {
+		return nil, err
 	}
 	body := strings.TrimRight(content, "\n") + "\n"
 	if strings.TrimSpace(body) == "" {
@@ -237,6 +237,9 @@ func (a *API) persistMerge(ctx context.Context, doc *models.Document, mergedCont
 // --- PatchCommentAnchor ---
 
 func (a *API) PatchCommentAnchor(ctx context.Context, userID, commentID string, opts mcpserver.CommentAnchorOpts) (*models.Comment, error) {
+	if _, _, err := a.mcpDocAccessForComment(ctx, userID, commentID); err != nil {
+		return nil, err
+	}
 	existing, err := a.store.GetComment(ctx, commentID)
 	if err != nil || existing == nil {
 		return nil, errors.New("comment not found")
@@ -298,6 +301,9 @@ func (a *API) PatchCommentAnchor(ctx context.Context, userID, commentID string, 
 // --- DeleteComment ---
 
 func (a *API) DeleteComment(ctx context.Context, userID, commentID string) error {
+	if _, _, err := a.mcpDocAccessForComment(ctx, userID, commentID); err != nil {
+		return err
+	}
 	c, err := a.store.GetComment(ctx, commentID)
 	if err != nil || c == nil {
 		return errors.New("comment not found")

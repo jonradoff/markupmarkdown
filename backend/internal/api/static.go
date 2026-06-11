@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"html"
 	"net/http"
 	"os"
@@ -24,6 +25,14 @@ type SPAHandler struct {
 	StaticDir string
 	Store     *store.Store
 	SiteURL   string
+	// IsPublicGitHub returns true when (owner, repo, ref, path) is
+	// currently reachable anonymously. Used to decide whether the doc
+	// title is safe to embed in og:title: a public repo's title is
+	// fair game, but a repo that flipped private *after* ingest
+	// would otherwise leak its filename to Slack unfurlers. Injected
+	// by the API layer at boot so the SPA handler doesn't need to
+	// directly depend on the GitHub fetch + cache machinery.
+	IsPublicGitHub func(ctx context.Context, owner, repo, ref, path string) bool
 }
 
 func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +87,21 @@ func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var meta *ogMeta
 		if h.Store != nil {
 			if doc, err := h.Store.GetDocument(r.Context(), docID); err == nil && doc != nil {
-				if doc.Private {
+				// Trust the stored Private flag, but ALSO re-verify
+				// public reachability for github-sourced docs — a repo
+				// that flipped private *after* ingest would otherwise
+				// keep leaking its filename to Slack unfurlers via
+				// og:title. Falls back to the private template
+				// whenever the live check fails or returns false.
+				safeToReveal := !doc.Private
+				if safeToReveal && doc.GitHubOwner != "" && h.IsPublicGitHub != nil {
+					safeToReveal = h.IsPublicGitHub(
+						r.Context(),
+						doc.GitHubOwner, doc.GitHubRepo,
+						doc.GitHubRef, doc.GitHubPath,
+					)
+				}
+				if !safeToReveal {
 					meta = &ogMeta{
 						Title:       "Private document · markupmarkdown",
 						Description: "This document is private. Sign in with GitHub access to the source repo to view it.",

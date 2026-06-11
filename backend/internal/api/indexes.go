@@ -168,7 +168,7 @@ func (a *API) createIndex(w http.ResponseWriter, r *http.Request) {
 
 	// Dedupe — if this user already has an index for the same target,
 	// return that one instead of minting a new ID.
-	existing, _ := a.store.FindIndexBySource(ctx, user.ID, target.Kind, target.Owner, target.Repo)
+	existing, _ := a.store.FindIndexBySource(ctx, target.Kind, target.Owner, target.Repo)
 	if existing != nil {
 		a.respondIndexWithItems(w, r, existing)
 		return
@@ -560,7 +560,20 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 	// single "items" event and short-circuit. Re-running a 150-repo
 	// org scan on every visit was both slow AND a needless GitHub
 	// rate-limit burn.
+	//
+	// `?refresh=1` is creator-only — an anonymous (or non-creator)
+	// viewer cannot poison the shared cache row with their thinner
+	// viewer_login audience. Without this gate, a Reddit visitor
+	// could trigger a fresh scan from their no-auth perspective and
+	// overwrite the canonical creator-stamped cache with a row that
+	// future cache reads then filter against the wrong scanner.
 	wantRefresh := r.URL.Query().Get("refresh") == "1"
+	if wantRefresh && (user == nil || idx.CreatedByID == "" || user.ID != idx.CreatedByID) {
+		// Silently treat as a cache read instead of 403 — non-creator
+		// Refresh clicks are common and harmless when the cache is up
+		// to date. We just refuse to overwrite the canonical row.
+		wantRefresh = false
+	}
 	if !wantRefresh {
 		if cached, _ := a.store.GetCachedIndexItems(r.Context(), idx.ID); cached != nil && len(cached.ItemsJSON) > 0 {
 			var items []indexItem

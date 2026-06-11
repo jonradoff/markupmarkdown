@@ -140,6 +140,36 @@ func (a *API) ListComments(ctx context.Context, docID string) ([]models.Comment,
 	return a.store.ListComments(ctx, docID)
 }
 
+// mcpDocAccess re-verifies that the token owner currently has GitHub
+// access to the doc's source repo. Called at the top of every
+// agent-write MCP API method — without this, a token whose owner
+// lost private-repo access could still write to docs through MCP
+// after the human UI's session-side check would have blocked them.
+// Returns the doc (so callers can avoid a second load) or a
+// sanitized error.
+func (a *API) mcpDocAccess(ctx context.Context, userID, docID string) (*models.Document, error) {
+	u, err := a.store.GetUser(ctx, userID)
+	if err != nil || u == nil {
+		return nil, errors.New("user not found")
+	}
+	return a.DocAccess(ctx, userID, docID, u.AccessToken)
+}
+
+// mcpDocAccessForComment re-verifies access against the document the
+// given comment belongs to. Mirrors the per-comment check the REST
+// surface enforces via checkCommentAccess.
+func (a *API) mcpDocAccessForComment(ctx context.Context, userID, commentID string) (*models.Document, *models.Comment, error) {
+	c, err := a.store.GetComment(ctx, commentID)
+	if err != nil || c == nil {
+		return nil, nil, errors.New("comment not found")
+	}
+	doc, err := a.mcpDocAccess(ctx, userID, c.DocumentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return doc, c, nil
+}
+
 // CreateComment is used by the MCP path. Bearer auth implies agent, so
 // every call here stamps the bot identity from tokenID + agentLabel; the
 // label is recomputed at read time from the current token record so
@@ -148,9 +178,9 @@ func (a *API) CreateComment(ctx context.Context, userID, docID, body, quoted str
 	if occurrence < 1 {
 		occurrence = 1
 	}
-	doc, err := a.store.GetDocument(ctx, docID)
-	if err != nil || doc == nil {
-		return nil, errors.New("document not found")
+	doc, err := a.mcpDocAccess(ctx, userID, docID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Anchor the agent's comment by text-substring. We extract the plain
@@ -231,6 +261,9 @@ func (a *API) ReplyToComment(ctx context.Context, userID, commentID, body, token
 }
 
 func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool) (*models.Comment, error) {
+	if _, _, err := a.mcpDocAccessForComment(ctx, userID, id); err != nil {
+		return nil, err
+	}
 	u, _ := a.store.GetUser(ctx, userID)
 	name := preferName(u)
 	var update bson.M
@@ -252,9 +285,9 @@ func (a *API) ResolveComment(ctx context.Context, userID, id string, reopen bool
 }
 
 func (a *API) ReviseWithAI(ctx context.Context, userID, docID string, commentIDs []string, accept bool, tokenID, agentLabel string) (*mcpserver.RevisionOutput, error) {
-	doc, err := a.store.GetDocument(ctx, docID)
-	if err != nil || doc == nil {
-		return nil, errors.New("document not found")
+	doc, err := a.mcpDocAccess(ctx, userID, docID)
+	if err != nil {
+		return nil, err
 	}
 	apiKey, err := a.decryptedAnthropicKey(ctx, userID)
 	if err != nil {

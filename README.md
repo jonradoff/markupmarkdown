@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/jonradoff/markupmarkdown/actions/workflows/ci.yml/badge.svg)](https://github.com/jonradoff/markupmarkdown/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/jonradoff/markupmarkdown/branch/master/graph/badge.svg)](https://codecov.io/gh/jonradoff/markupmarkdown)
-[![Go Report Card](https://goreportcard.com/badge/github.com/jonradoff/markupmarkdown)](https://goreportcard.com/report/github.com/jonradoff/markupmarkdown)
 
 **Google Docs for markdown — comment on, edit, and ship `.md` files like it's a real document.** Paste a URL, drag-select text, leave a margin comment. Your teammates see it in real time. Edit the raw markdown in a native CodeMirror editor with a formatting toolbar, find-and-replace, and live preview. Resolve threads, then hand them to Claude for an AI-revised version — or push your edits straight back to GitHub as a pull request or direct commit. Agents join the same review through an MCP server: they read what humans read, leave threads humans approve, and (with explicit human sign-off) apply the resolved feedback as a new revision.
 

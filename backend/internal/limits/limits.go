@@ -14,13 +14,25 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// IP extracts the originating IP from an incoming request, preferring the
-// last hop in X-Forwarded-For (which is what Fly's edge proxy sets).
+// IP extracts the originating IP from an incoming request. On Fly.io,
+// the trustworthy source is the `Fly-Client-IP` header — Fly's edge
+// proxy sets it after stripping/normalizing any client-supplied
+// headers. Falling back to X-Forwarded-For is dangerous: Fly appends
+// rather than replaces, so an attacker can put a fake IP at the
+// leftmost position and trivially defeat per-IP rate limits. We
+// prefer Fly-Client-IP, then the RIGHTMOST XFF entry (last hop = Fly's
+// edge), and only finally RemoteAddr.
 func IP(r *http.Request) string {
+	if fly := strings.TrimSpace(r.Header.Get("Fly-Client-IP")); fly != "" {
+		return fly
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the leftmost IP — that's the client-facing one.
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
+		// Rightmost entry is the last hop the request crossed before
+		// reaching us — i.e., Fly's own proxy IP for the connecting
+		// client. The leftmost (client-supplied) entries are
+		// untrustworthy.
+		if i := strings.LastIndex(xff, ","); i >= 0 {
+			return strings.TrimSpace(xff[i+1:])
 		}
 		return strings.TrimSpace(xff)
 	}

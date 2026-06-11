@@ -197,21 +197,26 @@ func (s *Store) ListIndexesForUser(ctx context.Context, userID string) ([]models
 	return out, nil
 }
 
-// FindIndexBySource looks up a creator's existing index pointing at the
-// given source so we can return it instead of minting a duplicate.
-// repo is "" for user/org indexes.
-func (s *Store) FindIndexBySource(ctx context.Context, userID string, kind models.IndexKind, owner, repo string) (*models.Index, error) {
-	if userID == "" {
+// FindIndexBySource looks up the canonical existing index pointing at
+// the given (kind, owner, repo) source so we can return it instead of
+// minting a duplicate. Dedup is GLOBAL across creators — first POST
+// wins; subsequent POSTs from any user resolve to the same id.
+// Without this, every Reddit visitor who pasted `github.com/beamable`
+// would mint their own beamable index and the share-link story would
+// fracture across hundreds of ids. repo is "" for user/org indexes.
+func (s *Store) FindIndexBySource(ctx context.Context, kind models.IndexKind, owner, repo string) (*models.Index, error) {
+	if owner == "" {
 		return nil, nil
 	}
+	// Oldest first so the canonical winner is the first creator.
+	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: 1}})
 	var idx models.Index
 	if err := s.Indexes().FindOne(ctx, bson.M{
-		"created_by_id": userID,
-		"kind":          string(kind),
-		"owner":         owner,
-		"repo":          repo,
-		"deleted_at":    bson.M{"$exists": false},
-	}).Decode(&idx); err != nil {
+		"kind":       string(kind),
+		"owner":      owner,
+		"repo":       repo,
+		"deleted_at": bson.M{"$exists": false},
+	}, opts).Decode(&idx); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil
 		}

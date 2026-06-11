@@ -197,7 +197,7 @@ func (a *API) authCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
-		writeError(w, http.StatusBadRequest, "missing code or state")
+		a.signinErrorRedirect(w, r, "missing_params")
 		return
 	}
 	st, err := a.store.ConsumeAuthState(r.Context(), state)
@@ -206,13 +206,17 @@ func (a *API) authCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st == nil {
-		writeError(w, http.StatusBadRequest, "invalid or expired state")
+		// State expired (10-min TTL) or already consumed (user hit
+		// refresh on the callback URL). Either way, the friendly
+		// recovery is to send them home with a Retry banner — NOT
+		// to dump raw JSON at the user, which is what shipped before.
+		a.signinErrorRedirect(w, r, "expired")
 		return
 	}
 	// Reject if this browser didn't initiate the flow.
 	cookie, err := r.Cookie(oauthCookie)
 	if err != nil || cookie.Value == "" || cookie.Value != st.CookieValue {
-		writeError(w, http.StatusBadRequest, "this sign-in request did not originate from your browser")
+		a.signinErrorRedirect(w, r, "cookie_mismatch")
 		return
 	}
 	// One-shot cookie; clear it.
@@ -307,6 +311,29 @@ func (a *API) authLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// signinErrorRedirect bails the OAuth callback gracefully when the
+// state cookie or stored state don't line up — common in the wild
+// (multi-tab logins, stale cookies, browser ITP, double-tap on Sign In).
+// Returns a 302 to home with `?signin_error=<reason>` instead of
+// dumping raw JSON at the user. The home page reads the query param
+// on mount, surfaces a friendly toast, and offers a one-click retry.
+func (a *API) signinErrorRedirect(w http.ResponseWriter, r *http.Request, reason string) {
+	// Clear the stale oauth cookie so the retry from the toast starts
+	// from a clean slate — otherwise the user can deadlock on the same
+	// cookie_mismatch error indefinitely.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthCookie,
+		Value:    "",
+		Path:     "/api/auth/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(a.cfg.Frontend.URL, "https://"),
+	})
+	dest := a.cfg.Frontend.URL + "/?signin_error=" + url.QueryEscape(reason)
+	http.Redirect(w, r, dest, http.StatusFound)
+}
+
 // isSafeRedirect ensures the redirect is a local path (not an open redirect).
 func isSafeRedirect(s string) bool {
 	if s == "" {
@@ -316,6 +343,12 @@ func isSafeRedirect(s string) bool {
 		return false
 	}
 	if strings.HasPrefix(s, "//") {
+		return false
+	}
+	// Reject `/\evil.com` and `/\\evil.com` — some browsers normalize
+	// backslashes to forward slashes, which would turn these into
+	// protocol-relative URLs that escape our origin.
+	if strings.ContainsRune(s, '\\') {
 		return false
 	}
 	if _, err := url.Parse(s); err != nil {

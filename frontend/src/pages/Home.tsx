@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, APIError } from "../api";
 import type { DocumentSummary, MarkdownIndex, TrashItem } from "../types";
 import { formatRelative } from "../utils/format";
@@ -12,7 +12,29 @@ export default function HomePage() {
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, githubEnabled, loginURL, loading: authLoading } = useAuth();
+
+  // Surface OAuth callback errors as a friendly toast rather than a
+  // raw-JSON dead-end page. Backend sends users here with
+  // `?signin_error=<reason>` for the three failure modes the cookie
+  // check can hit: state expired, browser dropped the oauth cookie,
+  // or the params were tampered with.
+  useEffect(() => {
+    const err = searchParams.get("signin_error");
+    if (!err) return;
+    const msgs: Record<string, string> = {
+      expired: "Your sign-in took too long and expired — please try again.",
+      cookie_mismatch:
+        "Your browser didn't keep the sign-in token (multi-tab sign-ins or strict privacy settings can cause this). Try again.",
+      missing_params: "GitHub didn't return the expected response. Please try again.",
+    };
+    toast.error(msgs[err] ?? "Sign-in didn't go through — please try again.");
+    // Strip the query param so a reload doesn't re-fire the toast.
+    const next = new URLSearchParams(searchParams);
+    next.delete("signin_error");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, toast]);
   const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
   const [indexes, setIndexes] = useState<MarkdownIndex[] | null>(null);
   const [trash, setTrash] = useState<TrashItem[] | null>(null);

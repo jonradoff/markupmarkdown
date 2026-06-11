@@ -115,6 +115,15 @@ func deriveGitHubInfo(doc *models.Document) (string, string, string, string, boo
 	return owner, repo, ref, path, true
 }
 
+// IsPublicGitHubBlob is the exported wrapper around publicGitHubCheck
+// — used by the SPA handler to decide whether a doc's title is safe
+// to embed in og:title for Slack/Twitter/etc. unfurls. The SPA package
+// can't reach the access cache directly, so it gets handed this
+// read-only probe at boot.
+func (a *API) IsPublicGitHubBlob(ctx context.Context, owner, repo, ref, path string) bool {
+	return a.publicGitHubCheck(ctx, owner, repo, ref, path)
+}
+
 // publicGitHubCheck returns true if the file at {owner}/{repo}/{ref}/{path}
 // is currently fetchable from the public raw.githubusercontent.com endpoint.
 // Results are cached for 5 minutes per (owner, repo, ref, path) to keep the

@@ -87,9 +87,10 @@ func main() {
 	if cfg.Frontend.StaticDir != "" {
 		log.Printf("Serving frontend from %s", cfg.Frontend.StaticDir)
 		r.PathPrefix("/").Handler(api.SPAHandler{
-			StaticDir: cfg.Frontend.StaticDir,
-			Store:     st,
-			SiteURL:   cfg.Frontend.URL,
+			StaticDir:      cfg.Frontend.StaticDir,
+			Store:          st,
+			SiteURL:        cfg.Frontend.URL,
+			IsPublicGitHub: a.IsPublicGitHubBlob,
 		})
 	}
 

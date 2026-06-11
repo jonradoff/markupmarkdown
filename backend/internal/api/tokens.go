@@ -269,6 +269,13 @@ func (a *API) tokenActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) revokeToken(w http.ResponseWriter, r *http.Request) {
+	// Bearer tokens cannot revoke tokens — including their own. A leaked
+	// token must not be able to nuke its siblings or its owner's other
+	// tokens. Mirrors the guard on POST/PATCH/DELETE /api/me/tokens*.
+	if _, hasToken := tokenInfoFromRequest(r); hasToken {
+		writeError(w, http.StatusForbidden, "this endpoint is browser-session only")
+		return
+	}
 	user := a.currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "sign in required")

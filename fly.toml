@@ -15,11 +15,19 @@ primary_region = 'ewr'
 [http_service]
   internal_port = 4721
   force_https = true
+  # Keep one machine warm for the public launch — cold-start latency
+  # punishes first-time visitors on a Reddit-front-page traffic
+  # spike. Auto_stop still trims excess capacity but the floor stays
+  # warm.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
 [[vm]]
-  memory = '512mb'
+  # Bumped from 512MB → 1GB for headroom under launch traffic. The
+  # in-process SSE hub, per-machine GitHub access cache, and
+  # plaintext-rendering cache all benefit from extra room before we
+  # start paging.
+  memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
