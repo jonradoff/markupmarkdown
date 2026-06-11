@@ -12,6 +12,7 @@ import {
 import type { Comment, MdDocument } from "../types";
 import MarkdownRender from "../components/MarkdownRender";
 import { baseURLForDoc } from "../utils/baseUrl";
+import { canonicalDocPath, rewriteToCanonical } from "../utils/canonicalUrl";
 import SelectionPopover from "../components/SelectionPopover";
 import NewCommentComposer from "../components/NewCommentComposer";
 import CommentCard from "../components/CommentCard";
@@ -196,6 +197,13 @@ export default function DocumentPage() {
         refreshSeqRef.current = 1;
         setDoc(d);
         setComments(cs);
+        // If the doc is github-anchored, replace /d/:id in the
+        // address bar with /:owner/:repo/blob/:ref/path so the URL
+        // reads as the human pasted it (or would copy-paste it).
+        // /d/:id keeps working as a permalink — we just trade the
+        // address bar's display for the human shape on mount.
+        const canonical = canonicalDocPath(d);
+        if (canonical) rewriteToCanonical(canonical);
       } catch (err) {
         if (cancelled) return;
         if (err instanceof APIError) setError(err);

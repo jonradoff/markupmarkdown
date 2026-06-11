@@ -16,6 +16,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Private items are filtered to the original scanner's audience so a
   cached org listing never leaks private file names to other viewers.
   Stops the "re-index every time I open the page" surprise.
+- **Human-URL canonicalization re-enabled.** The earlier blank-page
+  incident turned out to be an unrelated SSE-parser kind collision,
+  not the canonicalization itself. With that fixed, `replaceState`
+  back to the human form is safe again: `/i/:slug` rewrites to
+  `/:owner` or `/:owner/:repo` on mount, and `/d/:id` rewrites to
+  `/:owner/:repo/blob/:ref/:path`. Verified live via Playwright —
+  `/i/331a2f341adce0c3` lands in the address bar as `/jonradoff`.
 - **Human-readable URL system.** The SPA now accepts three URL shapes
   as first-class addresses for GitHub markdown:
   - `/owner/repo/blob/ref/path` → individual document (auto-clones if
