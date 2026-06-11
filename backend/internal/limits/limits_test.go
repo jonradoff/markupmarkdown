@@ -7,11 +7,59 @@ import (
 	"testing"
 )
 
-func TestIP_FromXForwardedFor(t *testing.T) {
+// IP() preference is: Fly-Client-IP > rightmost XFF > RemoteAddr.
+// Leftmost (client-supplied) XFF entries must NEVER be honored — they
+// are trivially spoofable, and the rate-limit story depends on this.
+
+func TestIP_PrefersFlyClientIP(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Fly-Client-IP", "203.0.113.5")
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8")
+	r.RemoteAddr = "10.0.0.1:54321"
+	if got := IP(r); got != "203.0.113.5" {
+		t.Fatalf("got %q, want 203.0.113.5 (Fly-Client-IP wins)", got)
+	}
+}
+
+func TestIP_FlyClientIPTrimmedWhitespace(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Fly-Client-IP", "  198.51.100.7  ")
+	if got := IP(r); got != "198.51.100.7" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestIP_FlyClientIPEmptyFallsThrough(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Fly-Client-IP", "")
+	r.Header.Set("X-Forwarded-For", "9.9.9.9")
+	if got := IP(r); got != "9.9.9.9" {
+		t.Fatalf("got %q (empty Fly header should not be returned)", got)
+	}
+}
+
+func TestIP_RightmostXFFOnly(t *testing.T) {
+	// Multi-hop XFF: the rightmost entry is the last hop (Fly's edge);
+	// any leftmost entries are client-supplied and untrusted.
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8")
-	if got := IP(r); got != "1.2.3.4" {
-		t.Fatalf("got %q, want 1.2.3.4", got)
+	if got := IP(r); got != "5.6.7.8" {
+		t.Fatalf("got %q, want 5.6.7.8 (rightmost XFF entry)", got)
+	}
+}
+
+func TestIP_LeftmostXFFNotHonored_SpoofResistance(t *testing.T) {
+	// An attacker setting `X-Forwarded-For: 1.1.1.1` upstream of Fly
+	// would result in Fly appending its real edge IP — the rightmost.
+	// We must NOT return 1.1.1.1.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 192.0.2.99")
+	got := IP(r)
+	if got == "1.1.1.1" {
+		t.Fatal("leftmost XFF entry honored — IP-rate-limit can be defeated by header injection")
+	}
+	if got != "192.0.2.99" {
+		t.Fatalf("got %q, want 192.0.2.99 (rightmost)", got)
 	}
 }
 
@@ -39,11 +87,19 @@ func TestIP_MalformedRemoteAddr(t *testing.T) {
 	}
 }
 
-func TestIP_HeaderTakesPrecedence(t *testing.T) {
+func TestIP_XFFTakesPrecedenceOverRemoteAddr(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.1:54321"
 	r.Header.Set("X-Forwarded-For", "8.8.8.8")
 	if got := IP(r); got != "8.8.8.8" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestIP_XFFWithTrailingWhitespaceTrimmed(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-For", "1.2.3.4,  5.6.7.8  ")
+	if got := IP(r); got != "5.6.7.8" {
 		t.Fatalf("got %q", got)
 	}
 }

@@ -54,6 +54,11 @@ func TestIsSafeRedirect(t *testing.T) {
 		{"http://evil.com", false},
 		{"https://evil.com", false},
 		{"javascript:alert(1)", false},
+		// Backslash branch: some browsers normalize \ to / which would
+		// turn /\evil.com into //evil.com (protocol-relative URL).
+		{`/\evil.com`, false},
+		{`/\\evil.com`, false},
+		{`/path/with\backslash`, false},
 	}
 	for _, c := range cases {
 		if got := isSafeRedirect(c.s); got != c.want {

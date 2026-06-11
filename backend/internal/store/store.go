@@ -208,15 +208,29 @@ func (s *Store) FindIndexBySource(ctx context.Context, kind models.IndexKind, ow
 	if owner == "" {
 		return nil, nil
 	}
+	filter := bson.M{
+		"kind":       string(kind),
+		"owner":      owner,
+		"deleted_at": bson.M{"$exists": false},
+	}
+	// Repo is bson:"repo,omitempty" on the model — so user/org indexes
+	// (where Repo == "") are stored WITHOUT a `repo` field at all.
+	// Querying {"repo": ""} would silently miss every existing user/org
+	// row and every POST would mint a new id (the dedup-failed-because-
+	// of-omitempty bug). Branch the query: exact match for repo
+	// indexes; missing-or-empty for user/org indexes.
+	if repo == "" {
+		filter["$or"] = []bson.M{
+			{"repo": bson.M{"$exists": false}},
+			{"repo": ""},
+		}
+	} else {
+		filter["repo"] = repo
+	}
 	// Oldest first so the canonical winner is the first creator.
 	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: 1}})
 	var idx models.Index
-	if err := s.Indexes().FindOne(ctx, bson.M{
-		"kind":       string(kind),
-		"owner":      owner,
-		"repo":       repo,
-		"deleted_at": bson.M{"$exists": false},
-	}, opts).Decode(&idx); err != nil {
+	if err := s.Indexes().FindOne(ctx, filter, opts).Decode(&idx); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil
 		}
