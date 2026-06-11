@@ -174,8 +174,8 @@ func homepageMeta(siteURL string) *ogMeta {
 	if siteURL == "" {
 		siteURL = "https://mumd.metavert.io"
 	}
-	title := "Google Docs for Markdown — Edit, Comment & Ship .md Files · markupmarkdown"
-	desc := "Google-Docs-style review for any Markdown file. Comment threads, native CodeMirror editor with formatting toolbar, find & replace, GitHub round-trip (open a PR or commit directly), AI revision via Claude, realtime sync, and an MCP server so agents review alongside humans. Edits happen on the actual markdown — your repo stays the source of truth."
+	title := "Google Docs for Markdown — Edit, Comment & Index .md Files Across Your Repos · markupmarkdown"
+	desc := "Google-Docs-style review for Markdown files, plus shareable indexes of every .md across a repo, user profile, or org. Comment threads, native CodeMirror editor with formatting toolbar, find & replace, GitHub round-trip (open a PR or commit directly), AI revision via Claude, realtime sync, and an MCP server so agents review alongside humans. Edits happen on the actual markdown — your repo stays the source of truth."
 	app := `{
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",

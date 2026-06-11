@@ -23,6 +23,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/:owner` or `/:owner/:repo` on mount, and `/d/:id` rewrites to
   `/:owner/:repo/blob/:ref/:path`. Verified live via Playwright —
   `/i/331a2f341adce0c3` lands in the address bar as `/jonradoff`.
+- **Marketing + docs surface markdown indexes.** README gains a
+  dedicated "Markdown indexes — organize a team's docs across all your
+  repos" section, the home page SEO title/description leads with
+  "across your repos", and metavert.io's marketing page (the
+  `/markupmarkdown` standalone + the `/projects` card) calls out
+  indexes as a first-class feature. The framing throughout: paste one
+  GitHub URL and a team gets a curated, filterable library of every
+  `.md` scattered across their projects.
 - **Human-readable URL system.** The SPA now accepts three URL shapes
   as first-class addresses for GitHub markdown:
   - `/owner/repo/blob/ref/path` → individual document (auto-clones if

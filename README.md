@@ -53,6 +53,23 @@ Everything you'd expect from a Google-Docs-style review experience, in a codebas
 - **Light / dark theme** that respects your system pref.
 - **Share dialog** — copies the link with an explicit note about access (private docs warn you about the GitHub-repo requirement before you send the URL).
 - **Per-tab title** and **Open Graph link unfurls** so shared URLs look meaningful in Slack/iMessage. Private docs share a generic card so titles don't leak.
+- **Human-readable URLs.** Paste `mumd.metavert.io/owner/repo/blob/ref/path` and it Just Works as the doc URL. `mumd.metavert.io/owner/repo` opens a repo index; `mumd.metavert.io/owner` opens a user or org index (auto-detected). When you arrive via a `/d/:id` or `/i/:id` permalink, the address bar auto-rewrites to the human form on mount, so copy-paste from the URL bar always gives you the shareable shape.
+
+### Markdown indexes — organize a team's docs across all your repos
+
+Indexes are **shareable listings of `.md` files** anchored to a GitHub resource. The point: a team has dozens of markdown docs scattered across repos (`PRD.md`, `RFC-*.md`, `README.md`, `CLAUDE.md`, …), and there's no good way to *navigate* them as a collection. Paste one URL and you get a curated index your whole team can browse and bookmark.
+
+- **Three URL shapes** recognized at the home-page URL bar:
+  - `github.com/owner/repo` → repo index, listing every `.md` file in the repo's git tree (one round-trip via `/git/trees?recursive=1`).
+  - `github.com/owner` → user *or* org index (auto-detected via `/users/{name}.type`), listing each repo's top-level `.md` files grouped by repo.
+- **Shareable, viewer-scoped access.** Each index lives at its own permalink and rewrites to a human URL (`mumd.metavert.io/anthropics`). Items are computed live on every view using the viewer's GitHub token — different viewers see different listings if their repo access differs. Private-repo indexes re-verify access on every read (same model as private docs); private items in user/org listings are filtered to the original scanner's audience so cached file names don't leak to non-members.
+- **Live progress.** Org spiders show a real-time activity log (last 8 repos with file counts), progress bar, and X/Y counter. The per-repo fetches fan out across a worker pool of 8 — `github.com/beamable` (~150 repos) completes in under 10 s instead of 60+.
+- **Server-side caching + explicit Refresh.** The first scan persists; subsequent visits load instantly from cache. A circular-arrow Refresh button in the page header re-spiders on demand. No accidental re-burning of GitHub rate limits.
+- **Filename filter tabs.** Save up to 5 case-insensitive substring filters (e.g. `claude.md`, `_PRD`, `RFC`) as named chips along the top. "All" is always present; tabs persist per-(browser, index) in localStorage; the last-active tab reopens on return.
+- **Pinned default filter (owner).** The index creator can pin one tab as the default view for share-link visitors. First-time visitors land on it; once they pick their own tab their choice takes over.
+- **Click → open in markupmarkdown.** Each row resolves to a doc via the existing find-or-create flow, so comments aggregate on the same doc across viewers rather than fracturing into N parallel clones.
+
+The home page surfaces *Your indexes* above *Your documents* so a saved index becomes the natural jumping-off point for browsing a team's markdown library.
 
 ### Optional GitHub identity
 
@@ -380,6 +397,17 @@ DELETE /api/documents/:id/edit-lock             release the soft edit lock
 GET    /api/documents/:id/pushback/info         GitHub repo + branch info for the push UI
 POST   /api/documents/:id/pushback              { mode: "pr"|"direct", branch, commitMessage, ... }
 GET    /api/documents/:id/mention-candidates    people known to this doc, for @-autocomplete
+GET    /api/documents/by-source                 ?owner=X&repo=Y&ref=Z&path=W → existing doc id
+
+# Markdown indexes
+POST   /api/indexes                             { url }   → meta-only (items stream separately)
+GET    /api/indexes/:id                         meta + items (synchronous, cached)
+GET    /api/indexes/:id/stream                  SSE — meta / scanning / items / done events
+                                                ?refresh=1 forces a fresh GitHub spider
+PATCH  /api/indexes/:id                         { title?, defaultFilter? } (creator-only)
+DELETE /api/indexes/:id                         soft-delete
+POST   /api/indexes/:id/forget                  hide from MY home list only
+GET    /api/me/indexes                          your live (non-forgotten) indexes
 
 PATCH  /api/comments/:id                        { body }
 DELETE /api/comments/:id
