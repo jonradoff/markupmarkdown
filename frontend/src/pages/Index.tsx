@@ -837,7 +837,14 @@ function parseSSEFrame(
       payload = { message: data };
     }
   }
-  return { kind: event as IndexProgressEvent["kind"], ...payload };
+  // CRITICAL: event-name wins over payload.kind. Without this, the
+  // "meta" event clobbers itself — its payload is the Index model
+  // which carries its OWN `kind` field ("user" / "org" / "repo"),
+  // so `{kind: "meta", ...payload}` would resolve to `kind: "user"`
+  // and the dispatcher would silently fall through. Same trap on the
+  // "ready" event whose payload is `{kind: idx.Kind}` for legacy
+  // reasons.
+  return { ...payload, kind: event as IndexProgressEvent["kind"] };
 }
 
 // mergeAndSort produces a stable order: by repo (alphabetical), then

@@ -206,8 +206,8 @@ func (a *API) createIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // getIndex implements GET /api/indexes/:id. Re-verifies access on
-// every read so a user who lost permission between views stops
-// seeing the listing.
+// every read — same model as Document.Private — so a user who lost
+// GitHub permission between views stops seeing the listing.
 func (a *API) getIndex(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	idx, err := a.store.GetIndex(r.Context(), id)
@@ -219,19 +219,38 @@ func (a *API) getIndex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "index not found")
 		return
 	}
+	if !a.gateIndexAccess(w, r, idx) {
+		return
+	}
+	a.respondIndexWithItems(w, r, idx)
+}
+
+// gateIndexAccess enforces the index-side equivalent of the
+// per-document GitHub access check. Returns true when the caller can
+// see the index; otherwise writes the error response and returns
+// false. Centralized so getIndex AND streamIndexItems share the same
+// gate (and so future handlers can't accidentally skip it).
+//
+// Public repo indexes + public user/org indexes are viewable by anyone
+// (they're shareable by design — same as a public doc). Private repo
+// indexes require GitHub repo access on every read. Items in user/org
+// indexes that span private repos get filtered to the viewer's
+// audience at serve-time via filterPrivateForViewer; cache writes are
+// audience-stamped so we know who scanned them.
+func (a *API) gateIndexAccess(w http.ResponseWriter, r *http.Request, idx *models.Index) bool {
 	user := a.currentUser(r)
 	if idx.Kind == models.IndexKindRepo && idx.Private {
 		if user == nil {
 			writeError(w, http.StatusUnauthorized, "sign in required to view this private index")
-			return
+			return false
 		}
-		ok, accErr := auth.CheckRepoAccess(r.Context(), user.AccessToken, idx.Owner, idx.Repo)
+		ok, accErr := repoAccessCache.check(r.Context(), user.ID, user.AccessToken, idx.Owner, idx.Repo)
 		if accErr != nil || !ok {
 			writeError(w, http.StatusForbidden, "you don't have access to this index's source repo")
-			return
+			return false
 		}
 	}
-	a.respondIndexWithItems(w, r, idx)
+	return true
 }
 
 // listMyIndexes implements GET /api/me/indexes. Sign-in required (we
@@ -512,18 +531,10 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "index not found")
 		return
 	}
-	user := a.currentUser(r)
-	if idx.Kind == models.IndexKindRepo && idx.Private {
-		if user == nil {
-			writeError(w, http.StatusUnauthorized, "sign in required")
-			return
-		}
-		ok, accErr := a.checkPrivateRepoAccess(r.Context(), user, idx)
-		if accErr != nil || !ok {
-			writeError(w, http.StatusForbidden, "you don't have access to this index's source repo")
-			return
-		}
+	if !a.gateIndexAccess(w, r, idx) {
+		return
 	}
+	user := a.currentUser(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
@@ -636,13 +647,6 @@ func (a *API) streamIndexItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-}
-
-// checkPrivateRepoAccess wraps the repo-access check for private
-// indexes — pulled out so both getIndex and streamIndexItems share the
-// same gate.
-func (a *API) checkPrivateRepoAccess(ctx context.Context, user *models.User, idx *models.Index) (bool, error) {
-	return auth.CheckRepoAccess(ctx, user.AccessToken, idx.Owner, idx.Repo)
 }
 
 // progressEvent is the unit of work materializeIndexStreaming pushes
