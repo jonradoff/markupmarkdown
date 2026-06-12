@@ -167,6 +167,37 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
   const layoutTickRef = useRef(onLayoutTick);
   layoutTickRef.current = onLayoutTick;
 
+  // Preview-sync state: cursor moves in the editor → the visual
+  // preview pane scrolls so the heading nearest to (and above) the
+  // cursor lines up at the top of the preview. Lets the user see
+  // their edits in real time without manually scrolling the preview.
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  // Dedup: only call scrollIntoView when the cursor crosses a heading
+  // boundary in the source, not on every single keystroke.
+  const lastHeadingIdxRef = useRef<number>(-2);
+  // Ref to the sync function so the (stable) updateListener extension
+  // can dispatch to a callback that reads always-fresh state.
+  const syncPreviewToCursorRef = useRef<((view: EditorView) => void) | null>(null);
+  syncPreviewToCursorRef.current = (view: EditorView) => {
+    if (!showPreview || !previewRef.current) return;
+    const sel = view.state.selection.main;
+    const cursorLine = view.state.doc.lineAt(sel.head).number; // 1-based
+    const text = view.state.doc.toString();
+    const idx = nearestHeadingIndex(text, cursorLine);
+    if (idx === lastHeadingIdxRef.current) return;
+    lastHeadingIdxRef.current = idx;
+    const root = previewRef.current;
+    if (idx < 0) {
+      // Cursor is above any heading → scroll the preview to its top
+      // so the user sees the beginning of the doc rendered.
+      root.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    const headings = root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6");
+    const target = headings[idx];
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   // CodeMirror extensions — built once, only rebuilt if the toggleable
   // pieces (none right now) change. Includes the markdown language,
   // search panel (default UI; opens on ⌘F), and our custom keymap.
@@ -196,10 +227,16 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
         ".cm-content": { padding: "12px 0" },
       }),
       // Notify the parent on scroll / geometry change so the
-      // anchored comment-card layout in the sidebar reflows.
+      // anchored comment-card layout in the sidebar reflows. Also
+      // drives the editor↔preview sync: when the cursor moves to a
+      // line under a different heading, scroll the visual preview so
+      // that heading lands at the top.
       EditorView.updateListener.of((u) => {
         if (u.geometryChanged || u.viewportChanged) {
           layoutTickRef.current?.();
+        }
+        if (u.selectionSet || u.docChanged) {
+          syncPreviewToCursorRef.current?.(u.view);
         }
       }),
       // Prec.highest so our save/format shortcuts shadow CodeMirror's
@@ -465,7 +502,7 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
           />
         </div>
         {showPreview && (
-          <div className="border border-rule rounded-md p-3 bg-card">
+          <div ref={previewRef} className="border border-rule rounded-md p-3 bg-card">
             <MarkdownRender
               content={content}
               baseUrl={baseURLForDoc(sourceUrl)}
@@ -479,6 +516,33 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
 });
 
 export default EditorPane;
+
+// nearestHeadingIndex walks the source text up to (and including) the
+// 1-based cursor line and returns the zero-based index of the most
+// recent markdown heading. Returns -1 if there's no heading at or
+// above the cursor — preview should scroll to its top in that case.
+//
+// We skip headings inside fenced code blocks (``` … ```) so a `#`
+// in a shell example or markdown-about-markdown doesn't get mistaken
+// for a real section header. The walk is O(lines-up-to-cursor) which
+// is fast enough to run on every selection change; if profiling ever
+// surfaces this as a hot path, memoize on doc.length + cursorLine.
+function nearestHeadingIndex(text: string, cursorLine1Based: number): number {
+  const lines = text.split("\n");
+  const max = Math.min(cursorLine1Based, lines.length);
+  let inFence = false;
+  let headingIndex = -1;
+  for (let i = 0; i < max; i++) {
+    const line = lines[i];
+    if (line.startsWith("```") || line.startsWith("~~~")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (/^#{1,6}\s/.test(line)) headingIndex++;
+  }
+  return headingIndex;
+}
 
 // ToolbarButton is the tiny styled wrapper for every formatting
 // button. preventDefault on mouseDown keeps the editor focused so
