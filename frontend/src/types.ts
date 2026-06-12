@@ -10,8 +10,20 @@ export interface DocumentSummary {
   revisionCount?: number;
   /** Root doc id when the listed entry is itself a child revision. */
   rootId?: string;
+  /** Older, independently-ingested copies of the SAME source file
+   *  that got folded into this entry's row. The Recents list shows
+   *  only the most-recent copy by default with a "N older copies"
+   *  expander — backed by the source-URL dedup in listDocuments. */
+  olderVersions?: OlderDocumentVersion[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OlderDocumentVersion {
+  id: string;
+  title: string;
+  updatedAt: string;
+  revisionCount?: number;
 }
 
 export interface NotificationItem {

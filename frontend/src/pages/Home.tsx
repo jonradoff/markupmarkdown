@@ -438,6 +438,9 @@ export default function HomePage() {
                   {d.origin === "url" && d.sourceUrl ? d.sourceUrl : "Uploaded"}
                   {" · "}updated {formatRelative(d.updatedAt)}
                 </div>
+                {d.olderVersions && d.olderVersions.length > 0 && (
+                  <OlderVersionsExpander older={d.olderVersions} />
+                )}
               </div>
               <div className="flex items-center gap-3 ml-4 shrink-0">
                 <button
@@ -515,6 +518,59 @@ export default function HomePage() {
 // /blob/, /tree/, /pull/, /issues/, raw URLs, etc. fall through to
 // the existing single-document create path. We also accept bare
 // `owner` / `owner/repo` strings for paste convenience.
+// OlderVersionsExpander renders a small "N older copies" disclosure
+// underneath a doc row that collapsed siblings from the source-URL
+// dedup. Default-collapsed; click expands to show id + updated-at +
+// a /d/:id link to each older copy. Lets the user reach pre-dedup
+// historical clones without cluttering Recents with parallel rows.
+function OlderVersionsExpander({
+  older,
+}: {
+  older: NonNullable<DocumentSummary["olderVersions"]>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="text-xs mt-1">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-faint hover:text-accent inline-flex items-center gap-1"
+        aria-expanded={open}
+      >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        {older.length} older cop{older.length === 1 ? "y" : "ies"} of this file
+      </button>
+      {open && (
+        <ul className="mt-1 ml-3 space-y-0.5 border-l border-rule pl-3">
+          {older.map((v) => (
+            <li key={v.id}>
+              <Link
+                to={`/d/${v.id}`}
+                className="text-faint hover:text-accent tabular-nums"
+                title={`Open this older copy (last updated ${formatRelative(v.updatedAt)})`}
+              >
+                <span className="text-muted">{v.title}</span>
+                {" · "}updated {formatRelative(v.updatedAt)}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function isGitHubIndexTarget(raw: string): boolean {
   if (!raw) return false;
   let s = raw.trim();

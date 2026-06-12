@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,26 +62,6 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 	// listing would show, not the root, so forgetting a chain hides
 	// the chain regardless of which node we walk to.
 	hidden, _ := a.store.HiddenItemIDs(r.Context(), user.ID, "doc")
-
-	type summary struct {
-		ID          string `json:"id"`
-		Title       string `json:"title"`
-		SourceURL   string `json:"sourceUrl,omitempty"`
-		Origin      string `json:"origin"`
-		Private     bool   `json:"private,omitempty"`
-		GitHubOwner string `json:"githubOwner,omitempty"`
-		GitHubRepo  string `json:"githubRepo,omitempty"`
-		CreatedAt   string `json:"createdAt"`
-		UpdatedAt   string `json:"updatedAt"`
-		// RevisionCount is the number of nodes in this chain (1 = no
-		// revisions, 3 = root + 2 AI revisions, etc). Lets the
-		// frontend render "AI-revised · N versions" inline.
-		RevisionCount int `json:"revisionCount,omitempty"`
-		// RootID is the root of the chain. Only set when the entry
-		// has been promoted from a touched ancestor to its leaf;
-		// frontend uses it for the revision-history popover.
-		RootID string `json:"rootId,omitempty"`
-	}
 
 	// Group every touched doc by its chain root. We then keep ONE
 	// entry per root — the chain's leaf — so users see "the current
@@ -151,7 +132,120 @@ func (a *API) listDocuments(w http.ResponseWriter, r *http.Request) {
 			RootID:        rootID,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+
+	// Source-URL dedup at the display layer. Independently-ingested
+	// chains pointing at the same GitHub blob (owner+repo+path)
+	// collapse into the most-recently-updated entry; the others get
+	// attached as OlderVersions so the UI can render an "N older
+	// copies" affordance instead of cluttering Recents with parallel
+	// rows for the same file. Uploads (no GitHub key) keep their own
+	// rows.
+	writeJSON(w, http.StatusOK, dedupBySource(out))
+}
+
+// summary is the per-row payload of GET /api/documents. Lifted to
+// package level so we can type the dedup helper without leaning on
+// gnarly anonymous-struct gymnastics.
+type summary struct {
+	ID            string         `json:"id"`
+	Title         string         `json:"title"`
+	SourceURL     string         `json:"sourceUrl,omitempty"`
+	Origin        string         `json:"origin"`
+	Private       bool           `json:"private,omitempty"`
+	GitHubOwner   string         `json:"githubOwner,omitempty"`
+	GitHubRepo    string         `json:"githubRepo,omitempty"`
+	CreatedAt     string         `json:"createdAt"`
+	UpdatedAt     string         `json:"updatedAt"`
+	RevisionCount int            `json:"revisionCount,omitempty"`
+	RootID        string         `json:"rootId,omitempty"`
+	OlderVersions []olderVersion `json:"olderVersions,omitempty"`
+}
+
+type olderVersion struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	UpdatedAt     string `json:"updatedAt"`
+	RevisionCount int    `json:"revisionCount,omitempty"`
+}
+
+// dedupBySource groups summaries by (githubOwner, githubRepo,
+// githubPath) — ref intentionally omitted because /blob/main/X.md and
+// /blob/master/X.md after a rename are the same logical file. The
+// most-recently-updated entry in each group stays; the rest are
+// folded into its OlderVersions. Uploads and non-github entries pass
+// through untouched. Input order is preserved (newest-touched first).
+func dedupBySource(rows []summary) []summary {
+	// Two passes so we can preserve the first-seen ordering of kept
+	// entries while still collapsing later siblings into them.
+	keyOf := func(r summary) string {
+		if r.GitHubOwner == "" || r.GitHubRepo == "" {
+			return "" // upload / non-github — never deduped
+		}
+		// We don't store GitHubPath on the summary today; recover it
+		// from the source URL. Keys are case-insensitive to match
+		// GitHub's own case handling.
+		_, _, _, path, ok := parseGitHubBlobURL(r.SourceURL)
+		if !ok {
+			return ""
+		}
+		return strings.ToLower(r.GitHubOwner) + "/" +
+			strings.ToLower(r.GitHubRepo) + "/" +
+			strings.ToLower(path)
+	}
+	type group struct {
+		idx     int      // position in `out` where the kept entry sits
+		kept    *summary // pointer to the surviving row
+		members []int    // indexes into rows of every doc in this group
+	}
+	groups := make(map[string]*group)
+	out := make([]summary, 0, len(rows))
+	for i := range rows {
+		k := keyOf(rows[i])
+		if k == "" {
+			out = append(out, rows[i])
+			continue
+		}
+		if g, ok := groups[k]; ok {
+			g.members = append(g.members, i)
+			continue
+		}
+		out = append(out, rows[i])
+		g := &group{idx: len(out) - 1, kept: &out[len(out)-1], members: []int{i}}
+		groups[k] = g
+	}
+	// Now walk each group, choose the most-recently-updated as the
+	// canonical kept entry, and fold the rest into OlderVersions.
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			continue
+		}
+		// Pick the member with the latest UpdatedAt as the kept row.
+		bestIdx := g.members[0]
+		for _, m := range g.members[1:] {
+			if rows[m].UpdatedAt > rows[bestIdx].UpdatedAt {
+				bestIdx = m
+			}
+		}
+		// Overwrite the kept slot with the chosen row.
+		*g.kept = rows[bestIdx]
+		// Attach every other member as an older-version entry, newest
+		// older first.
+		older := make([]olderVersion, 0, len(g.members)-1)
+		for _, m := range g.members {
+			if m == bestIdx {
+				continue
+			}
+			older = append(older, olderVersion{
+				ID:            rows[m].ID,
+				Title:         rows[m].Title,
+				UpdatedAt:     rows[m].UpdatedAt,
+				RevisionCount: rows[m].RevisionCount,
+			})
+		}
+		sort.Slice(older, func(a, b int) bool { return older[a].UpdatedAt > older[b].UpdatedAt })
+		g.kept.OlderVersions = older
+	}
+	return out
 }
 
 // chainDepth walks from rootID via the most-recently-created child
@@ -293,6 +387,25 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 				"documentId": id,
 			})
 			return
+		}
+		// Source-URL dedup: if this exact GitHub blob URL has already
+		// been ingested, redirect to the existing chain leaf instead
+		// of minting a parallel clone. Two viewers pasting the same
+		// URL now land on the SAME doc so comments aggregate. Same
+		// dedup the human-URL resolver already does via /by-source.
+		if owner, repo, ref, p, ok := parseGitHubBlobURL(req.URL); ok {
+			if root, _ := a.store.FindLatestDocumentBySource(r.Context(), owner, repo, ref, p); root != nil {
+				leaf := root
+				if d, _ := a.store.LatestDescendant(r.Context(), root.ID); d != nil {
+					leaf = d
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"redirect":   "/d/" + leaf.ID,
+					"kind":       "self_doc_redirect",
+					"documentId": leaf.ID,
+				})
+				return
+			}
 		}
 	}
 
