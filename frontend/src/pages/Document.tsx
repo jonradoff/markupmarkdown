@@ -1310,6 +1310,7 @@ export default function DocumentPage() {
               ref={contentRef}
               content={doc.content}
               baseUrl={baseURLForDoc(doc.sourceUrl)}
+              sourceUrl={doc.sourceUrl}
             />
           )}
 

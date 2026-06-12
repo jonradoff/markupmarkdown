@@ -4,6 +4,7 @@ package api_test
 // resolveBySource and forgetDocument.
 
 import (
+	"bytes"
 	"net/url"
 	"testing"
 
@@ -105,24 +106,5 @@ func TestForgetDocument_NotFound(t *testing.T) {
 }
 
 func containsBody(body []byte, s string) bool {
-	return indexBytes(body, []byte(s)) >= 0
-}
-
-func indexBytes(haystack, needle []byte) int {
-	if len(needle) == 0 {
-		return 0
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
+	return bytes.Contains(body, []byte(s))
 }

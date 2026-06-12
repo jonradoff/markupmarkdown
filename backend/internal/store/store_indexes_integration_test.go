@@ -120,20 +120,24 @@ func TestStoreIntegration_FindIndexBySource_OldestWins(t *testing.T) {
 
 	// Use Repo-kind so both records have a non-empty `repo` field
 	// (the model tags it as omitempty, so empty-string filter wouldn't
-	// match a missing field).
+	// match a missing field). Use unique repo names so this test can
+	// share a DB with other parallel runs.
+	olderID := "olderwin-" + uuid.NewString()[:6]
+	newerID := "newerwin-" + uuid.NewString()[:6]
+	repoName := "oldestwins-" + uuid.NewString()[:6]
 	older := &models.Index{
-		ID: "old-canonical", Kind: models.IndexKindRepo, Owner: "ownertest", Repo: "repotest", Title: "older",
-		SourceURL: "https://github.com/ownertest/repotest",
+		ID: olderID, Kind: models.IndexKindRepo, Owner: "ownertest", Repo: repoName, Title: "older",
+		SourceURL:   "https://github.com/ownertest/" + repoName,
 		CreatedByID: "user-a",
-		CreatedAt: time.Now().Add(-2 * time.Hour),
-		UpdatedAt: time.Now().Add(-2 * time.Hour),
+		CreatedAt:   time.Now().Add(-2 * time.Hour),
+		UpdatedAt:   time.Now().Add(-2 * time.Hour),
 	}
 	newer := &models.Index{
-		ID: "new-clone", Kind: models.IndexKindRepo, Owner: "ownertest", Repo: "repotest", Title: "newer",
-		SourceURL: "https://github.com/ownertest/repotest",
+		ID: newerID, Kind: models.IndexKindRepo, Owner: "ownertest", Repo: repoName, Title: "newer",
+		SourceURL:   "https://github.com/ownertest/" + repoName,
 		CreatedByID: "user-b",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if err := st.InsertIndex(ctx, newer); err != nil {
 		t.Fatalf("insert newer: %v", err)
@@ -142,11 +146,11 @@ func TestStoreIntegration_FindIndexBySource_OldestWins(t *testing.T) {
 		t.Fatalf("insert older: %v", err)
 	}
 
-	found, err := st.FindIndexBySource(ctx, models.IndexKindRepo, "ownertest", "repotest")
+	found, err := st.FindIndexBySource(ctx, models.IndexKindRepo, "ownertest", repoName)
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
-	if found == nil || found.ID != "old-canonical" {
+	if found == nil || found.ID != olderID {
 		t.Fatalf("expected oldest canonical winner; got %+v", found)
 	}
 }
@@ -332,6 +336,72 @@ func TestStoreIntegration_FindLatestDocumentBySource_SkipsChildren(t *testing.T)
 	got, _ := st.FindLatestDocumentBySource(ctx, "a", "b", "main", "X.md")
 	if got == nil || got.ID != root.ID {
 		t.Fatalf("expected root, got %+v", got)
+	}
+}
+
+func TestStoreIntegration_ListIndexesForUser(t *testing.T) {
+	st, cleanup := testutil.MustConnectTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	mine := uuid.NewString()
+	other := uuid.NewString()
+	now := time.Now().UTC()
+
+	// Two indexes for `mine`, one for `other`. The one for `other`
+	// must NOT appear in the listing for `mine`.
+	for _, idx := range []*models.Index{
+		{ID: uuid.NewString(), Kind: models.IndexKindRepo, Owner: "a", Repo: "1",
+			CreatedByID: mine, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
+		{ID: uuid.NewString(), Kind: models.IndexKindRepo, Owner: "a", Repo: "2",
+			CreatedByID: mine, CreatedAt: now, UpdatedAt: now},
+		{ID: uuid.NewString(), Kind: models.IndexKindRepo, Owner: "b", Repo: "1",
+			CreatedByID: other, CreatedAt: now, UpdatedAt: now},
+	} {
+		_ = st.InsertIndex(ctx, idx)
+	}
+
+	rows, err := st.ListIndexesForUser(ctx, mine)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("got %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.CreatedByID != mine {
+			t.Errorf("foreign index leaked: %+v", r)
+		}
+	}
+
+	// Soft-deleted indexes are excluded.
+	if err := st.SoftDeleteIndex(ctx, rows[0].ID); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+	rows, _ = st.ListIndexesForUser(ctx, mine)
+	if len(rows) != 1 {
+		t.Errorf("got %d after soft delete, want 1", len(rows))
+	}
+}
+
+func TestStoreIntegration_UpdateIndexTitle(t *testing.T) {
+	st, cleanup := testutil.MustConnectTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	idx := &models.Index{
+		ID: uuid.NewString(), Kind: models.IndexKindRepo, Owner: "a", Repo: "b",
+		Title:     "original",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	_ = st.InsertIndex(ctx, idx)
+
+	if err := st.UpdateIndexTitle(ctx, idx.ID, "renamed"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, _ := st.GetIndex(ctx, idx.ID)
+	if got.Title != "renamed" {
+		t.Errorf("got %q", got.Title)
 	}
 }
 

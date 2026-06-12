@@ -469,6 +469,7 @@ const EditorPane = forwardRef<EditorPaneHandle, Props>(function EditorPane({
             <MarkdownRender
               content={content}
               baseUrl={baseURLForDoc(sourceUrl)}
+              sourceUrl={sourceUrl}
             />
           </div>
         )}
