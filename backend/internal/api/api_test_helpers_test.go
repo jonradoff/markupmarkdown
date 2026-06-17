@@ -31,6 +31,11 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store, *api.API) {
 		t.Skip("testutil: MONGODB_URI not set; integration test skipped")
 	}
 	testutil.ResetDB(t, sharedStore)
+	// In-process state previously had its own per-test instance; with
+	// the shared *api.API it has to be reset between tests so a
+	// previous test's cached "this repo is reachable" answer or
+	// consumed rate-limit tokens don't leak forward.
+	sharedAPI.ResetForTests()
 	return sharedServer, sharedStore, sharedAPI
 }
 

@@ -30,6 +30,20 @@ const (
 )
 
 // initLimits wires up all the in-memory throttles.
+// ResetForTests wipes the in-process state that previously leaked
+// across integration tests once the suite started sharing a single
+// *api.API via the test_main_test.go fixture. Resets the access
+// caches (so a previous test's "we already checked this repo" answer
+// doesn't pre-empt a fresh HEAD count) and reinits the rate-limit
+// buckets (so a previous test's revise calls don't pre-consume this
+// test's allowance). The harness calls this at newTestServer entry.
+// Test-only — never wire this into a non-test code path.
+func (a *API) ResetForTests() {
+	repoAccessCache.reset()
+	publicFetchCache.reset()
+	a.initLimits()
+}
+
 func (a *API) initLimits() {
 	// Document creation: 10/min per identity, burst 3. SSRF and outbound DoS
 	// guard.

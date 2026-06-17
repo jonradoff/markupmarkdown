@@ -246,11 +246,22 @@ func TestPatchIndex_BlankTitleRejected(t *testing.T) {
 	}
 }
 
+// Note for the next two tests: patchIndex finalizes its response via
+// respondIndexWithItems, which serves from the index_items cache when
+// present. Without this seed, the handler would try to materialize
+// live from github.com and 401 against the fake test user's empty
+// access token. We just need the meta update to round-trip; the
+// materialization path itself is exercised by tests that mock the
+// GitHub transport.
+
 func TestPatchIndex_RenameSucceeds(t *testing.T) {
 	srv, st, _ := newTestServer(t)
 	user := testutil.NewTestUser(t, st)
 	sess := testutil.NewTestSession(t, st, user.ID)
 	idx := insertTestIndex(t, st, user.ID)
+	if err := st.SetCachedIndexItems(context.Background(), idx.ID, []byte("[]"), false, user.Login); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
 	status, body := doJSON(t, srv, "PATCH", "/api/indexes/"+idx.ID,
 		map[string]string{"title": "Renamed"}, withCookie(sess))
 	if status != 200 {
@@ -266,6 +277,9 @@ func TestPatchIndex_SetDefaultFilter(t *testing.T) {
 	user := testutil.NewTestUser(t, st)
 	sess := testutil.NewTestSession(t, st, user.ID)
 	idx := insertTestIndex(t, st, user.ID)
+	if err := st.SetCachedIndexItems(context.Background(), idx.ID, []byte("[]"), false, user.Login); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
 	defaultFilter := "readme"
 	status, body := doJSON(t, srv, "PATCH", "/api/indexes/"+idx.ID,
 		map[string]*string{"defaultFilter": &defaultFilter}, withCookie(sess))

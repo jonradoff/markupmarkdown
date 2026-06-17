@@ -237,6 +237,16 @@ var repoAccessCache = &accessCache{
 	ttl:     2 * time.Minute,
 }
 
+// reset wipes every cached entry. Test-only — called between
+// integration tests that share a package-level *api.API so previous
+// tests' cached access decisions don't leak forward. Not exported
+// because production code never wants to nuke the cache wholesale.
+func (c *accessCache) reset() {
+	c.mu.Lock()
+	c.entries = map[repoCacheKey]repoCacheEntry{}
+	c.mu.Unlock()
+}
+
 // invalidate drops the cached entry for the (userID, owner, repo) tuple
 // so the next check call hits GitHub. Used by the manual "check now"
 // flow so a user kicked out of a repo gets booted within a tab focus.
@@ -297,6 +307,15 @@ type publicFetchCacheT struct {
 var publicFetchCache = &publicFetchCacheT{
 	entries: map[publicFetchKey]publicFetchEntry{},
 	ttl:     5 * time.Minute,
+}
+
+// reset wipes the cache. Same rationale + same scope as
+// accessCache.reset — only the integration test harness should
+// ever call this.
+func (c *publicFetchCacheT) reset() {
+	c.mu.Lock()
+	c.entries = map[publicFetchKey]publicFetchEntry{}
+	c.mu.Unlock()
 }
 
 // invalidate drops the cached entry for the given file so the next

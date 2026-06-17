@@ -235,12 +235,18 @@ func TestMCPAPI_AllowRates_RoundTrip(t *testing.T) {
 	if !a.AllowCommentRate("u-x") {
 		t.Fatal("first comment rate call should be allowed")
 	}
-	// Revise rate bucket has burst 1.
-	if !a.AllowReviseRate("u-x") {
-		t.Fatal("first revise rate call should be allowed")
+	// Revise rate bucket has burst 5 (per limits.go: 240/hour, burst 5).
+	// Walk the burst down — the first 5 should pass, the 6th should
+	// fail. The original assertion ("second call denied") was written
+	// against a single-shot burst that was widened to 5 in the
+	// pre-launch rate-limit retune (commit b1a217a).
+	for i := 0; i < 5; i++ {
+		if !a.AllowReviseRate("u-x") {
+			t.Fatalf("revise call %d should be allowed (burst is 5)", i+1)
+		}
 	}
 	if a.AllowReviseRate("u-x") {
-		t.Fatal("second revise rate call should be denied (no refill)")
+		t.Fatal("6th revise call should be denied (burst exhausted, no refill yet)")
 	}
 }
 
