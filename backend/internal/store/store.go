@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -34,6 +35,20 @@ func New(uri, dbName string) (*Store, error) {
 	s := &Store{client: client, db: client.Database(dbName)}
 	s.ensureIndexes(ctx)
 	return s, nil
+}
+
+// DropDatabase drops the entire database this store is connected to.
+// Test-only — the testutil package uses this to fully tear down a
+// per-run database so nothing leaks between runs. Refuses if the
+// database name doesn't contain "test" so a production accident is
+// physically impossible at this layer too (testutil has its own
+// guard; this is belt-and-suspenders).
+func (s *Store) DropDatabase(ctx context.Context) error {
+	name := s.db.Name()
+	if !strings.Contains(strings.ToLower(name), "test") {
+		return fmt.Errorf("store: REFUSING to drop database %q (name must contain 'test')", name)
+	}
+	return s.db.Drop(ctx)
 }
 
 func (s *Store) Close(ctx context.Context) error {

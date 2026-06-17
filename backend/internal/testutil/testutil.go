@@ -9,6 +9,9 @@ package testutil
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -115,9 +118,16 @@ func enforceTestDBName(t *testing.T, name string) {
 }
 
 // MustConnectTestDB connects to the test database and returns the store
-// plus a cleanup that deletes every document in every collection so the
-// next test starts from zero. The cleanup uses DeleteMany rather than
-// Drop so indexes survive across packages running in parallel.
+// plus a cleanup that fully drops the database so the next test run
+// starts from zero — including indexes, not just documents.
+//
+// Each invocation appends a unique suffix to the configured DB name
+// (e.g. `markupmarkdown-test-7a3f`) so parallel CI runs, multiple
+// `go test ./...` invocations on the same machine, and concurrent
+// `make test` shells never collide on the same `markupmarkdown-test`
+// rows. The base name still has to contain "test" — the safety guard
+// is unchanged, and the suffix is also marked with "test" so the
+// resulting name still matches.
 //
 // If MONGODB_URI is unset (e.g. CI without secrets), the test is skipped
 // rather than failed — local development should configure .env.test, and
@@ -129,7 +139,15 @@ func MustConnectTestDB(t *testing.T) (*store.Store, func()) {
 		t.Skip("testutil: MONGODB_URI not set; skipping (configure backend/.env.test or set the env var)")
 	}
 
-	st, err := store.New(cfg.Database.URI, cfg.Database.Name)
+	// Per-process DB suffix so concurrent test runs don't step on
+	// each other. We use crypto/rand because some packages spin up
+	// MustConnectTestDB inside parallel subtests and a math/rand
+	// global would race them all into the same suffix.
+	suffix := randomTestSuffix()
+	dbName := cfg.Database.Name + "-" + suffix
+	enforceTestDBName(t, dbName)
+
+	st, err := store.New(cfg.Database.URI, dbName)
 	if err != nil {
 		t.Fatalf("testutil: connect: %v", err)
 	}
@@ -137,18 +155,43 @@ func MustConnectTestDB(t *testing.T) (*store.Store, func()) {
 	clearAll(t, st)
 
 	cleanup := func() {
-		clearAll(t, st)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Drop the whole per-run DB so nothing leaks between runs and
+		// stale rows can't accumulate in Atlas. Falls back to clearAll
+		// if the drop fails (e.g. transient Atlas hiccup) so the next
+		// run at least starts from empty collections.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if err := st.DropDatabase(ctx); err != nil {
+			t.Logf("testutil: drop %s: %v (falling back to clearAll)", dbName, err)
+			clearAll(t, st)
+		}
 		_ = st.Close(ctx)
 	}
 	return st, cleanup
+}
+
+// randomTestSuffix returns a short hex token guaranteed to keep the
+// resulting DB name matching the enforceTestDBName guard. Prefixed
+// with "test" so a future reader scanning Atlas can immediately tell
+// the row is ephemeral.
+func randomTestSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to a time-based suffix if crypto/rand fails (it
+		// shouldn't, but we don't want test setup to panic on a flake).
+		return fmt.Sprintf("test%d", time.Now().UnixNano()%1_000_000)
+	}
+	return "test" + hex.EncodeToString(b[:])
 }
 
 // clearAll deletes every document in every collection the suite uses.
 // Adding a new collection means adding it here. The safety guard in
 // LoadTestConfig means this can only run against a database whose name
 // contains "test".
+//
+// Used as the fallback inside cleanup when DropDatabase fails, and
+// also directly by ResetDB between sub-tests within a single test
+// process.
 func clearAll(t *testing.T, st *store.Store) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -164,6 +207,13 @@ func clearAll(t *testing.T, st *store.Store) {
 		st.Notifications(),
 		st.APITokens(),
 		st.TokenEvents(),
+		// Collections added since the original 80%-coverage snapshot.
+		// Forgetting one of these is exactly how the index-dedup
+		// flakiness happened — keep this list in sync with store.go's
+		// collection accessors.
+		st.Indexes(),
+		st.IndexItems(),
+		st.HiddenItems(),
 	} {
 		if _, err := coll.DeleteMany(ctx, bson.M{}); err != nil {
 			t.Logf("testutil: clear %s: %v", coll.Name(), err)
