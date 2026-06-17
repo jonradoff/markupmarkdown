@@ -162,7 +162,14 @@ func MustConnectTestDB(t *testing.T) (*store.Store, func()) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := st.DropDatabase(ctx); err != nil {
-			t.Logf("testutil: drop %s: %v (falling back to clearAll)", dbName, err)
+			// Free-tier Atlas users typically lack dropDatabase
+			// privilege; we swallow that and fall back to clearAll
+			// silently (clearAll is also what gives us a per-collection
+			// wipe under the per-run suffix DB, so data isolation is
+			// preserved either way). Other errors do get logged.
+			if !strings.Contains(err.Error(), "not authorized") {
+				t.Logf("testutil: drop %s: %v (falling back to clearAll)", dbName, err)
+			}
 			clearAll(t, st)
 		}
 		_ = st.Close(ctx)
