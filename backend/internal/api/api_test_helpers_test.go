@@ -11,29 +11,27 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gorilla/mux"
-
 	"markupmarkdown/internal/api"
 	"markupmarkdown/internal/store"
 	"markupmarkdown/internal/testutil"
 )
 
-// newTestServer wires the API into an httptest server and returns it
-// along with a cleanup that closes the server + drops the test DB.
+// newTestServer returns the package-level shared httptest server +
+// store + API, after resetting the DB to an empty state for this test.
+// The shared resources are set up ONCE in test_main_test.go's TestMain
+// — pre-refactor, every call was paying the full ~6s Atlas connection
+// setup, which is what made the integration suite blow past the 600s
+// timeout. Now each test pays ~50ms for the ResetDB call.
+//
+// If the shared setup was skipped (MONGODB_URI unset, free-tier CI
+// without the secret), this skips the calling test cleanly.
 func newTestServer(t *testing.T) (*httptest.Server, *store.Store, *api.API) {
 	t.Helper()
-	st, cleanup := testutil.MustConnectTestDB(t)
-
-	a := testutil.MustAPI(t, st)
-	r := mux.NewRouter()
-	a.Register(r)
-	srv := httptest.NewServer(r)
-
-	t.Cleanup(func() {
-		srv.Close()
-		cleanup()
-	})
-	return srv, st, a
+	if sharedSkipped || sharedStore == nil {
+		t.Skip("testutil: MONGODB_URI not set; integration test skipped")
+	}
+	testutil.ResetDB(t, sharedStore)
+	return sharedServer, sharedStore, sharedAPI
 }
 
 // doJSON performs an HTTP call against srv and decodes the response.

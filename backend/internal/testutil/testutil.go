@@ -117,6 +117,113 @@ func enforceTestDBName(t *testing.T, name string) {
 	}
 }
 
+// ConnectShared is the non-T variant of MustConnectTestDB used from
+// TestMain — where there's no *testing.T to fail or skip against. It
+// returns (nil, nil, nil) when MONGODB_URI is unset so callers know to
+// skip the shared-suite setup (and let any tests that DO touch the DB
+// skip individually via MustConnectTestDB's normal path).
+//
+// Same per-run-suffix isolation as MustConnectTestDB. Cleanup drops the
+// suffixed database; if that's denied (free-tier Atlas) the caller
+// should fall back to ResetDB across tests.
+func ConnectShared() (st *store.Store, cleanup func(), err error) {
+	cfg, err := loadConfigWithoutT()
+	if err != nil {
+		return nil, nil, err
+	}
+	if cfg.Database.URI == "" {
+		return nil, nil, nil // signal: skip shared setup
+	}
+	dbName := cfg.Database.Name + "-" + randomTestSuffix()
+	if !strings.Contains(strings.ToLower(dbName), "test") {
+		return nil, nil, fmt.Errorf(
+			"testutil: REFUSING to use shared db %q (must contain 'test')", dbName)
+	}
+	s, err := store.New(cfg.Database.URI, dbName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+	clean := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.DropDatabase(ctx) // ignore errors; DB will be collected
+		_ = s.Close(ctx)
+	}
+	return s, clean, nil
+}
+
+// loadConfigWithoutT mirrors LoadTestConfig but returns errors instead
+// of calling t.Fatalf — so TestMain doesn't need a synthetic *testing.T.
+func loadConfigWithoutT() (*config.Config, error) {
+	loadEnvTestNoT()
+	cfgPath, err := findConfigPathNoT()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("config.Load(%s): %w", cfgPath, err)
+	}
+	if !strings.Contains(strings.ToLower(cfg.Database.Name), "test") {
+		return nil, fmt.Errorf(
+			"testutil: REFUSING to use config — database name %q must contain 'test'",
+			cfg.Database.Name)
+	}
+	return cfg, nil
+}
+
+func loadEnvTestNoT() {
+	dir, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	for {
+		envPath := filepath.Join(dir, ".env.test")
+		if data, rerr := os.ReadFile(envPath); rerr == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				eq := strings.Index(line, "=")
+				if eq < 1 {
+					continue
+				}
+				k := strings.TrimSpace(line[:eq])
+				v := strings.TrimSpace(line[eq+1:])
+				v = strings.Trim(v, `"'`)
+				if _, exists := os.LookupEnv(k); !exists {
+					_ = os.Setenv(k, v)
+				}
+			}
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
+}
+
+func findConfigPathNoT() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		candidate := filepath.Join(dir, "config", "test.yaml")
+		if _, serr := os.Stat(candidate); serr == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("config/test.yaml not found above %s", dir)
+		}
+		dir = parent
+	}
+}
+
 // MustConnectTestDB connects to the test database and returns the store
 // plus a cleanup that fully drops the database so the next test run
 // starts from zero — including indexes, not just documents.
@@ -245,6 +352,17 @@ func MustAPI(t *testing.T, st *store.Store) *api.API {
 		t.Fatalf("testutil: api.New: %v", err)
 	}
 	return a
+}
+
+// MustAPIFromStore is the TestMain-friendly variant of MustAPI — no
+// *testing.T to fail or skip against, returns errors instead. Used by
+// the shared-suite setup in package-level TestMain.
+func MustAPIFromStore(st *store.Store) (*api.API, error) {
+	cfg, err := loadConfigWithoutT()
+	if err != nil {
+		return nil, err
+	}
+	return api.New(cfg, st)
 }
 
 // NewTestVault constructs a secrets.Vault using the given hex master key.
