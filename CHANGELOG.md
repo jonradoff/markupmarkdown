@@ -6,6 +6,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Gists as a first-class source kind.** Pasting a gist URL (or
+  navigating to `mumd.metavert.io/<owner>/<gist_id>` / the canonical
+  `mumd.metavert.io/gist/<owner>/<gist_id>`) now creates a fully-
+  tracked doc — not just opaque content. New `SourceKind`
+  discriminator on the doc model (`github_blob` | `gist` | `url` |
+  `upload`) cleans up the long-running `if doc.GitHubOwner != ""`
+  conditional sprawl. Gist docs carry the gist owner + id + commit
+  SHA + filename + file count. The same source-drift banner that
+  fires on github blob changes also fires on gist commits — drift is
+  detected via `api.github.com/gists/<id>`'s `history[0].version`,
+  cached the same way + cleared via the same Ignore / Sync UI.
+  Multi-file gists default to the first markdown file (lex-sorted
+  fallback when no `.md` exists); a "this gist has N other files"
+  affordance below the title links out to the gist's GitHub page
+  for picking a different one. The 49 existing docs were migrated
+  in place by `cmd/migrate-source-kind` (per-doc `UpdateOne`,
+  idempotent) — the 4 known gist docs picked up their commit SHAs
+  on the spot.
+- **URL-swap trick now works without the hex regex.** Editing
+  `gist.github.com` to `mumd.metavert.io` (or `github.com` to
+  `mumd.metavert.io`) Just Works, because the `/<owner>/<repo>`
+  resolver tries `createIndex` first and falls back to
+  `createFromURL(gistURLFor(...))` on a 404. Real repos still pay
+  exactly one round-trip; gists pay two. The fragile 20-/32-char
+  hex pattern matching is gone.
+
 ### Fixed
 
 - **Gist URLs ingest as markdown.** Pasting `https://gist.github.com/{user}/{id}`
@@ -13,10 +41,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   failed with "you don't have access to that repo" (the resolver was
   treating the gist hash as a repo name, GitHub returned 404, the
   backend reported it as no-access). The URL system now recognizes
-  20- and 32-char hex second segments as gist IDs, fetches the gist's
-  `/raw` view (which returns text/plain markdown), and creates a
-  commentable doc as expected. Both entry points covered: home-form
-  paste and direct navigation.
+  gists end-to-end (above) — both entry points covered: home-form
+  paste and direct navigation, plus the new canonical `/gist/<owner>/<id>`.
 
 ### Added
 
