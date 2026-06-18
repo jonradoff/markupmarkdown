@@ -89,6 +89,26 @@ export default function GitHubResolve({ mode }: Props) {
             navigate(`/d/${(res as { id: string }).id}`, { replace: true });
           }
         } else if (mode === "repo") {
+          // Gist shortcut: the path /:owner/:gistId looks like an
+          // owner/repo pair but the second segment is actually a
+          // gist hash (hex, 20 or 32 chars — historically 20, now
+          // 32). Don't try to treat it as a repo on GitHub: there's
+          // no such repo so GitHub answers 404 and the user sees
+          // "no access to that repo." Route it through createFromURL
+          // with the gist landing page; the backend rewrites
+          // /<owner>/<id> to /raw before fetching.
+          if (/^[0-9a-f]{20}$|^[0-9a-f]{32}$/.test(repo)) {
+            setStatus(`Loading gist ${owner}/${repo}…`);
+            const gistURL = `https://gist.github.com/${owner}/${repo}`;
+            const res = await api.createFromURL(gistURL);
+            if (cancelled) return;
+            if ("kind" in res && res.kind === "self_doc_redirect") {
+              navigate(res.redirect, { replace: true });
+            } else {
+              navigate(`/d/${(res as { id: string }).id}`, { replace: true });
+            }
+            return;
+          }
           setStatus(`Indexing ${owner}/${repo}…`);
           const idx = await api.createIndex(githubURLForRepo(owner, repo));
           if (cancelled) return;
