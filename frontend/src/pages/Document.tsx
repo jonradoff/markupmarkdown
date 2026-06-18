@@ -1268,6 +1268,29 @@ export default function DocumentPage() {
             />
           )}
 
+          {/* Multi-file gist affordance — surfaces when the gist has
+              more files than the one we ingested. Clicking opens the
+              gist landing page so the user can copy a different
+              file's URL into mumd. No in-app file picker MVP. */}
+          {doc.sourceKind === "gist" &&
+            doc.gistOwner &&
+            doc.gistId &&
+            (doc.gistFileCount ?? 0) > 1 && (
+              <div className="mb-4 rounded-md border border-rule bg-soft px-3 py-2 text-sm text-muted">
+                This gist has {(doc.gistFileCount ?? 1) - 1} other file
+                {(doc.gistFileCount ?? 1) - 1 === 1 ? "" : "s"} —{" "}
+                <a
+                  href={`https://gist.github.com/${doc.gistOwner}/${doc.gistId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  open the gist on GitHub
+                </a>{" "}
+                to pick a different one.
+              </div>
+            )}
+
           {reanchorTarget && (
             <div className="mb-4 rounded-lg border-2 border-accent bg-accent-soft p-3 flex items-start gap-3">
               <div className="flex-1 text-sm">

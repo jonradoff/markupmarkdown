@@ -14,6 +14,7 @@ import type { MarkdownIndex, MdDocument } from "../types";
 const RESERVED_TOP = new Set<string>([
   "d",
   "i",
+  "gist",
   "api",
   "favicon.svg",
   "robots.txt",
@@ -24,8 +25,15 @@ const RESERVED_TOP = new Set<string>([
 ]);
 
 /** Computes the canonical "human" path for a document. Returns null
- *  when the doc isn't anchored to a github blob URL (e.g. uploads). */
+ *  for sources that don't have a meaningful URL shape (uploads,
+ *  arbitrary URLs). Switches on sourceKind so gists get their own
+ *  /gist/<owner>/<id> form without colliding with github user URLs. */
 export function canonicalDocPath(doc: MdDocument): string | null {
+  if (doc.sourceKind === "gist") {
+    if (!doc.gistOwner || !doc.gistId) return null;
+    return `/gist/${encodeURIComponent(doc.gistOwner)}/${encodeURIComponent(doc.gistId)}`;
+  }
+  // github_blob (or pre-migration docs without sourceKind set).
   if (!doc.githubOwner || !doc.githubRepo || !doc.githubPath) return null;
   if (RESERVED_TOP.has(doc.githubOwner)) return null;
   const ref = doc.githubRef || "main";
@@ -70,6 +78,13 @@ export function githubURLForRepo(owner: string, repo: string): string {
 
 export function githubURLForOwner(owner: string): string {
   return `https://github.com/${owner}`;
+}
+
+/** Builds the gist landing-page URL from resolver route params. The
+ *  backend's normalizeGistURL rewrites to /raw before fetching, so we
+ *  hand it the landing form (cleaner to log + display than /raw).  */
+export function gistURLFor(owner: string, gistId: string): string {
+  return `https://gist.github.com/${owner}/${gistId}`;
 }
 
 /** Returns true when `name` is a reserved top-level path the resolver

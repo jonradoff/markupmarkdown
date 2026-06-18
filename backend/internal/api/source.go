@@ -63,13 +63,24 @@ func (a *API) maybeRefreshSourceDrift(doc *models.Document, userToken string) {
 	if root == nil {
 		return
 	}
-	if _, _, _, _, ok := deriveGitHubInfo(root); !ok {
-		return
-	}
 	if root.SourceCheckedAt != nil && time.Since(*root.SourceCheckedAt) < sourceCheckTTL {
 		return
 	}
-	a.runSourceCheck(root, userToken, false)
+	switch root.SourceKind {
+	case models.SourceKindGist:
+		a.runGistSourceCheck(root, userToken, false)
+		return
+	case models.SourceKindGitHubBlob, "":
+		// Empty kind falls into the github-blob path for pre-migration
+		// docs (shouldn't exist after Phase 2 ran, but the safety net
+		// stays cheap).
+		if _, _, _, _, ok := deriveGitHubInfo(root); !ok {
+			return
+		}
+		a.runSourceCheck(root, userToken, false)
+	default:
+		// SourceKindUpload / SourceKindURL — no upstream to track.
+	}
 }
 
 // rootForDrift returns the root document of the revision chain for
@@ -139,6 +150,88 @@ func (a *API) runSourceCheck(doc *models.Document, userToken string, force bool)
 	}()
 }
 
+// runGistSourceCheck is the gist-flavored sibling of runSourceCheck.
+// Hits api.github.com/gists/<id> for the current commit SHA, compares
+// against the doc's stored GistCommit, and surfaces drift through the
+// same SourceLatestSHA / SourceDriftedAt fields the github_blob path
+// uses (so the same banner UI lights up regardless of source kind).
+func (a *API) runGistSourceCheck(doc *models.Document, userToken string, force bool) {
+	if doc == nil || doc.GistID == "" {
+		return
+	}
+	docID := doc.ID
+	hadBaseline := doc.GistCommit != ""
+	if !force {
+		if _, loaded := sourceCheckInFlight.LoadOrStore(docID, struct{}{}); loaded {
+			return
+		}
+	}
+	go func() {
+		if !force {
+			defer sourceCheckInFlight.Delete(docID)
+		}
+		ctx, cancel := context.WithTimeout(contextDetached(), 15*time.Second)
+		defer cancel()
+		// Try the user's token first (handles secret gists); fall back to
+		// anonymous if the auth'd call fails (gist might be public, the
+		// token might have lost scope, etc.).
+		meta, err := auth.FetchGistMeta(ctx, userToken, doc.GistID)
+		if err != nil && userToken != "" {
+			meta, err = auth.FetchGistMeta(ctx, "", doc.GistID)
+		}
+		if err != nil || meta == nil {
+			return
+		}
+		sha := meta.LatestCommit
+		if sha == "" {
+			return
+		}
+		now := time.Now().UTC()
+		if !hadBaseline {
+			// Migration backfilled GistCommit on every legacy gist, but a
+			// freshly-created doc whose ingest hit the API-failure
+			// fallback could land here. Stamp the baseline and surface
+			// any difference as drift — mirrors backfillBaseline.
+			set := bson.M{
+				"gist_commit":       sha,
+				"source_checked_at": now,
+			}
+			_, _ = a.store.Documents().UpdateOne(ctx,
+				docByIDFilter(docID),
+				bson.M{"$set": set})
+			return
+		}
+		prevDrift := doc.SourceLatestSHA != ""
+		nowDrift := sha != doc.GistCommit
+		set := bson.M{"source_checked_at": now}
+		unset := bson.M{}
+		if nowDrift {
+			set["source_latest_sha"] = sha
+			set["source_drifted_at"] = now
+			// Clear the ignore marker if the user dismissed a previous,
+			// now-superseded drift sha.
+			if doc.SourceDriftIgnoredSHA != "" && doc.SourceDriftIgnoredSHA != sha {
+				unset["source_drift_ignored_sha"] = ""
+			}
+		} else {
+			unset["source_latest_sha"] = ""
+			unset["source_drifted_at"] = ""
+			unset["source_drift_ignored_sha"] = ""
+		}
+		update := bson.M{"$set": set}
+		if len(unset) > 0 {
+			update["$unset"] = unset
+		}
+		if _, err := a.store.Documents().UpdateOne(ctx,
+			docByIDFilter(docID), update); err != nil {
+			return
+		}
+		if nowDrift != prevDrift {
+			a.hub.Broadcast(docID, "doc-updated")
+		}
+	}()
+}
+
 // backfillBaseline stamps a legacy doc with the git blob SHA of its
 // stored content as the baseline. If that doesn't equal the live
 // upstream SHA, also stamps the drift fields — so a file edited
@@ -195,40 +288,48 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 	if target == nil {
 		target = doc
 	}
-	owner, repo, ref, p, ok := deriveGitHubInfo(target)
-	if !ok {
-		writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, false))
-		return
-	}
 	token := ""
 	if u := a.currentUser(r); u != nil {
 		token = u.AccessToken
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	sha, err := auth.FetchGitHubFileSHA(ctx, token, owner, repo, ref, p)
-	if err != nil && token != "" {
-		sha, err = auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
-	}
-	if err != nil {
-		writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, true))
-		return
-	}
 
-	if target.SourceSHA == "" {
-		a.backfillBaseline(ctx, target.ID, target.Content, sha)
-	} else {
-		prevDrift := target.SourceLatestSHA != ""
-		if err := a.store.SetDocumentSourceCheck(ctx, target.ID, sha); err != nil {
-			internalError(w, "store.set_source_check", err)
+	switch target.SourceKind {
+	case models.SourceKindGist:
+		if !a.checkGistSourceNow(ctx, doc, target) {
+			writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, true))
 			return
 		}
-		nowDrift := sha != target.SourceSHA
-		if nowDrift != prevDrift {
-			a.hub.Broadcast(target.ID, "doc-updated")
-			if target.ID != doc.ID {
-				a.hub.Broadcast(doc.ID, "doc-updated")
+	default:
+		// github_blob (or pre-migration empty kind that still has owner stamped).
+		owner, repo, ref, p, ok := deriveGitHubInfo(target)
+		if !ok {
+			writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, false))
+			return
+		}
+		sha, err := auth.FetchGitHubFileSHA(ctx, token, owner, repo, ref, p)
+		if err != nil && token != "" {
+			sha, err = auth.FetchGitHubFileSHA(ctx, "", owner, repo, ref, p)
+		}
+		if err != nil {
+			writeJSON(w, http.StatusOK, sourceCheckResponse(doc, target, true))
+			return
+		}
+		if target.SourceSHA == "" {
+			a.backfillBaseline(ctx, target.ID, target.Content, sha)
+		} else {
+			prevDrift := target.SourceLatestSHA != ""
+			if err := a.store.SetDocumentSourceCheck(ctx, target.ID, sha); err != nil {
+				internalError(w, "store.set_source_check", err)
+				return
+			}
+			nowDrift := sha != target.SourceSHA
+			if nowDrift != prevDrift {
+				a.hub.Broadcast(target.ID, "doc-updated")
+				if target.ID != doc.ID {
+					a.hub.Broadcast(doc.ID, "doc-updated")
+				}
 			}
 		}
 	}
@@ -238,6 +339,55 @@ func (a *API) checkSourceNow(w http.ResponseWriter, r *http.Request) {
 		updated = target
 	}
 	writeJSON(w, http.StatusOK, sourceCheckResponse(doc, updated, false))
+}
+
+// checkGistSourceNow is the synchronous gist-flavored sibling of the
+// github branch in checkSourceNow. Returns true on success, false on a
+// transient fetch failure (caller surfaces checkFailed in the response).
+func (a *API) checkGistSourceNow(ctx context.Context, current, target *models.Document) bool {
+	if target == nil || target.GistID == "" {
+		return false
+	}
+	meta, err := auth.FetchGistMeta(ctx, "", target.GistID)
+	if err != nil || meta == nil || meta.LatestCommit == "" {
+		return false
+	}
+	sha := meta.LatestCommit
+	now := time.Now().UTC()
+	set := bson.M{"source_checked_at": now}
+	unset := bson.M{}
+	if target.GistCommit == "" {
+		// No baseline yet — stamp it.
+		set["gist_commit"] = sha
+	} else {
+		prevDrift := target.SourceLatestSHA != ""
+		nowDrift := sha != target.GistCommit
+		if nowDrift {
+			set["source_latest_sha"] = sha
+			set["source_drifted_at"] = now
+			if target.SourceDriftIgnoredSHA != "" && target.SourceDriftIgnoredSHA != sha {
+				unset["source_drift_ignored_sha"] = ""
+			}
+		} else {
+			unset["source_latest_sha"] = ""
+			unset["source_drifted_at"] = ""
+			unset["source_drift_ignored_sha"] = ""
+		}
+		if nowDrift != prevDrift {
+			defer a.hub.Broadcast(target.ID, "doc-updated")
+			if current != nil && current.ID != target.ID {
+				defer a.hub.Broadcast(current.ID, "doc-updated")
+			}
+		}
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	if _, err := a.store.Documents().UpdateOne(ctx, docByIDFilter(target.ID), update); err != nil {
+		return false
+	}
+	return true
 }
 
 // sourceCheckResponse builds the JSON the frontend receives. The

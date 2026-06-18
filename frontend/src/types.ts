@@ -90,12 +90,26 @@ export interface MdDocument {
   title: string;
   sourceUrl?: string;
   origin: "url" | "upload";
+  /** Discriminates which set of source-specific fields are populated.
+   * Newer than `origin`; switch on this in new code. */
+  sourceKind?: "github_blob" | "gist" | "url" | "upload";
   content: string;
   private?: boolean;
   githubOwner?: string;
   githubRepo?: string;
   githubRef?: string;
   githubPath?: string;
+  /** Gist fields — populated when sourceKind === "gist". gistCommit
+   * mirrors sourceSha's role for github blobs (both are upstream-
+   * content fingerprints driving drift detection). gistFilename is
+   * which file inside the gist this doc was cloned from; gistFileCount
+   * is stored so the "this gist has N more files" UI affordance
+   * doesn't need an extra round-trip. */
+  gistOwner?: string;
+  gistId?: string;
+  gistCommit?: string;
+  gistFilename?: string;
+  gistFileCount?: number;
   /** Blob SHA of the source file at last sync, if GitHub-sourced. */
   sourceSha?: string;
   /** When the upstream SHA was last checked. */
