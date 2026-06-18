@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
-	defer st.Close(context.Background())
+	defer func() { _ = st.Close(context.Background()) }()
 	log.Printf("Stamping source_kind on docs in db=%s", cfg.Database.Name)
 
 	ctx := context.Background()
