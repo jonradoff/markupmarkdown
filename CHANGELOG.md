@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Gist URLs ingest as markdown.** Pasting `https://gist.github.com/{user}/{id}`
+  or navigating to the human-URL form `mumd.metavert.io/{user}/{gist_id}`
+  failed with "you don't have access to that repo" (the resolver was
+  treating the gist hash as a repo name, GitHub returned 404, the
+  backend reported it as no-access). The URL system now recognizes
+  20- and 32-char hex second segments as gist IDs, fetches the gist's
+  `/raw` view (which returns text/plain markdown), and creates a
+  commentable doc as expected. Both entry points covered: home-form
+  paste and direct navigation.
+
 ### Added
 
 - **Index items are cached server-side; explicit Refresh button.** First
