@@ -33,9 +33,10 @@ export default function App() {
           <Route path="/i/:id" element={<IndexPage />} />
           {/* Human-readable GitHub URL routes. Ordered most-specific
               first so /:owner/:repo/blob/:ref/* matches before the
-              shorter prefixes. The leading literals `d` and `i` are
-              also reserved at the resolver level so a github user
-              literally named "d" wouldn't collide with /d/:id. */}
+              shorter prefixes. The leading literals `d`, `i`, and
+              `gist` are reserved at the resolver level so a github
+              user literally named "d" wouldn't collide with /d/:id. */}
+          <Route path="/gist/:owner/:gistId" element={<GitHubResolve mode="gist" />} />
           <Route path="/:owner/:repo/blob/:ref/*" element={<GitHubResolve mode="doc" />} />
           <Route path="/:owner/:repo" element={<GitHubResolve mode="repo" />} />
           <Route path="/:owner" element={<GitHubResolve mode="owner" />} />

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, APIError } from "../api";
 import {
+  gistURLFor,
   githubURLForBlob,
   githubURLForOwner,
   githubURLForRepo,
@@ -32,7 +33,7 @@ import ErrorBlock from "../components/ErrorBlock";
 // concern (open-graph injection, browser title, scroll restoration)
 // branchy. Better to centralize at the /d/:id and /i/:id render and
 // let the canonicalizer maintain the human URL.
-type Mode = "owner" | "repo" | "doc";
+type Mode = "owner" | "repo" | "doc" | "gist";
 
 interface Props {
   mode: Mode;
@@ -88,31 +89,69 @@ export default function GitHubResolve({ mode }: Props) {
           } else {
             navigate(`/d/${(res as { id: string }).id}`, { replace: true });
           }
+        } else if (mode === "gist") {
+          // Canonical gist URL — explicit. The repo branch below
+          // also reaches this codepath as a fallback when GitHub
+          // answers 404, but only when the user typed the github-
+          // mirror URL (no `gist/` prefix).
+          const gistId = params.gistId ?? "";
+          if (!gistId) {
+            setError(new APIError("Bad gist URL — owner and id are required", { kind: "bad_request" }));
+            return;
+          }
+          setStatus(`Loading gist ${owner}/${gistId}…`);
+          const res = await api.createFromURL(gistURLFor(owner, gistId));
+          if (cancelled) return;
+          if ("kind" in res && res.kind === "self_doc_redirect") {
+            navigate(res.redirect, { replace: true });
+          } else {
+            navigate(`/d/${(res as { id: string }).id}`, { replace: true });
+          }
         } else if (mode === "repo") {
-          // Gist shortcut: the path /:owner/:gistId looks like an
-          // owner/repo pair but the second segment is actually a
-          // gist hash (hex, 20 or 32 chars — historically 20, now
-          // 32). Don't try to treat it as a repo on GitHub: there's
-          // no such repo so GitHub answers 404 and the user sees
-          // "no access to that repo." Route it through createFromURL
-          // with the gist landing page; the backend rewrites
-          // /<owner>/<id> to /raw before fetching.
-          if (/^[0-9a-f]{20}$|^[0-9a-f]{32}$/.test(repo)) {
-            setStatus(`Loading gist ${owner}/${repo}…`);
-            const gistURL = `https://gist.github.com/${owner}/${repo}`;
-            const res = await api.createFromURL(gistURL);
+          // Try as repo first; fall back to gist on 404. Preserves
+          // the URL-swap trick (mumd.metavert.io/<owner>/<seg>
+          // works for both github.com/<owner>/<repo> and
+          // gist.github.com/<owner>/<id>) without depending on a
+          // fragile hex regex. Real repos pay the same one round-
+          // trip as today; gists pay two.
+          setStatus(`Indexing ${owner}/${repo}…`);
+          try {
+            const idx = await api.createIndex(githubURLForRepo(owner, repo));
+            if (cancelled) return;
+            navigate(`/i/${idx.id}`, { replace: true });
+            return;
+          } catch (err) {
+            // Only fall back on a definite "no such thing" — other
+            // errors (auth, rate limit) should bubble.
+            const isMissing =
+              err instanceof APIError &&
+              (err.kind === "not_found" ||
+                /not found/i.test(err.message));
+            if (!isMissing) throw err;
+          }
+          setStatus(`Not a repo — trying as a gist…`);
+          try {
+            const res = await api.createFromURL(gistURLFor(owner, repo));
             if (cancelled) return;
             if ("kind" in res && res.kind === "self_doc_redirect") {
               navigate(res.redirect, { replace: true });
             } else {
               navigate(`/d/${(res as { id: string }).id}`, { replace: true });
             }
-            return;
+          } catch (gistErr) {
+            const isMissing =
+              gistErr instanceof APIError &&
+              (gistErr.kind === "not_found" ||
+                /not found/i.test(gistErr.message));
+            if (isMissing) {
+              setError(new APIError(
+                `No repo or gist at ${owner}/${repo} on GitHub.`,
+                { kind: "not_found" },
+              ));
+              return;
+            }
+            throw gistErr;
           }
-          setStatus(`Indexing ${owner}/${repo}…`);
-          const idx = await api.createIndex(githubURLForRepo(owner, repo));
-          if (cancelled) return;
-          navigate(`/i/${idx.id}`, { replace: true });
         } else {
           setStatus(`Looking up ${owner} on GitHub…`);
           const idx = await api.createIndex(githubURLForOwner(owner));
