@@ -901,7 +901,15 @@ type fetchedDoc struct {
 func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) (*fetchedDoc, error) {
 	owner, repo, ref, p, isGitHub := parseGitHubBlobURL(rawURL)
 	if !isGitHub {
-		c, err := a.fetchURL(ctx, rawURL)
+		// Gist landing pages return HTML; redirect to the /raw view so
+		// we get the markdown body instead. Public gists are anonymous-
+		// readable; secret gists are readable to anyone with the link
+		// (also anonymous). So no auth handoff is needed for either.
+		fetchURL := rawURL
+		if raw, ok := normalizeGistURL(rawURL); ok {
+			fetchURL = raw
+		}
+		c, err := a.fetchURL(ctx, fetchURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1007,6 +1015,46 @@ func (a *API) fetchURL(ctx context.Context, rawURL string) (string, error) {
 		return "", fmt.Errorf("file exceeds max size (%d bytes)", a.cfg.Fetch.MaxBytes)
 	}
 	return string(body), nil
+}
+
+// normalizeGistURL rewrites a gist landing-page URL into the URL
+// that returns the raw file content. Returns (rewritten, true) when
+// the input is a gist, otherwise ("", false) so callers can keep the
+// original URL untouched.
+//
+// Supported input shapes (single-file gists — multi-file isn't
+// disambiguable from the URL alone, but appending /raw still returns
+// the first file which is what GitHub's own gist viewer does):
+//   - https://gist.github.com/{owner}/{gist_id}
+//   - https://gist.github.com/{owner}/{gist_id}/raw  (passthrough)
+//   - https://gist.githubusercontent.com/...         (already raw)
+func normalizeGistURL(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	host := strings.ToLower(u.Host)
+	if host == "gist.githubusercontent.com" {
+		return raw, true // already a raw URL — no rewrite needed
+	}
+	if host != "gist.github.com" {
+		return "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return "", false
+	}
+	owner, gistID := parts[0], parts[1]
+	if owner == "" || gistID == "" {
+		return "", false
+	}
+	// Already has /raw (with or without commit + filename) — leave as-is.
+	for _, p := range parts[2:] {
+		if p == "raw" {
+			return raw, true
+		}
+	}
+	return fmt.Sprintf("https://gist.github.com/%s/%s/raw", owner, gistID), true
 }
 
 // normalizeGitHubURL converts github.com/{owner}/{repo}/blob/{branch}/{path}
