@@ -70,11 +70,40 @@ jobs:
   test-backend:
     name: test (backend unit + integration)
     runs-on: ubuntu-latest
+    # Vanilla MongoDB 7 in a per-run container. We don't reach for
+    # Atlas in CI because (a) prod credentials should never leak into
+    # CI, (b) Atlas free-tier instability flakes coverage runs, and
+    # (c) the test surface uses zero Atlas-only features (no change
+    # streams, no Atlas Search) — a stock mongo gives the same gates.
+    services:
+      mongo:
+        image: mongo:7
+        env:
+          # Root creds are *only* used for one provisioning step that
+          # creates the scoped app user. After that the connection
+          # used by tests is the scoped app user — see env.MONGODB_URI
+          # below. Both root creds live entirely inside this CI run's
+          # network namespace.
+          MONGO_INITDB_ROOT_USERNAME: ci-root
+          MONGO_INITDB_ROOT_PASSWORD: ci-root-${{ github.run_id }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       MARKUPMARKDOWN_ENV: test
-      MONGODB_URI: ${{ secrets.MONGODB_URI }}
-      # CI uses a distinct DB name; both end in "test" so the safety
-      # guard in internal/testutil accepts them.
+      # Tests use a per-run-suffixed DB name (testutil adds an 8-char
+      # random suffix), so the scoped app user is granted cluster-wide
+      # readWrite + dbAdmin. The container itself is the isolation
+      # boundary — fresh per CI run, no other data inside it, network
+      # namespace bound to the runner. The scoped user is
+      # defense-in-depth so even a buggy test can't authenticate
+      # against unrelated infrastructure if MONGODB_URI is somehow
+      # misconfigured.
+      MONGODB_URI: mongodb://ci-app:ci-app-pw@localhost:27017/markupmarkdown-test-ci?authSource=admin
       DATABASE_NAME: markupmarkdown-test-ci
       MARKUPMARKDOWN_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
     steps:
@@ -84,9 +113,26 @@ jobs:
         with:
           go-version: "1.25"
 
-      # Tests that touch MongoDB skip themselves when MONGODB_URI is
-      # unset (see testutil.MustConnectTestDB). That keeps the workflow
-      # green on forks / new clones without a configured Atlas URI.
+      # Provision a scoped app user. Lives in `admin` (required for
+      # the *AnyDatabase roles) but is distinct from the root user
+      # used during initdb. The root password is purged from process
+      # state after this step by nothing — but it's per-run and only
+      # valid against the localhost container that dies with the job.
+      - name: Provision scoped test user
+        run: |
+          docker exec ${{ job.services.mongo.id }} mongosh \
+            "mongodb://ci-root:ci-root-${{ github.run_id }}@localhost:27017/admin" \
+            --quiet --eval '
+              db.getSiblingDB("admin").createUser({
+                user: "ci-app",
+                pwd: "ci-app-pw",
+                roles: [
+                  { role: "readWriteAnyDatabase", db: "admin" },
+                  { role: "dbAdminAnyDatabase",   db: "admin" }
+                ]
+              })
+            '
+
       - name: Run tests with coverage
         working-directory: backend
         run: |
