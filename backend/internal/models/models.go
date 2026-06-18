@@ -33,7 +33,13 @@ type Document struct {
 	Title     string    `bson:"title" json:"title"`
 	SourceURL string    `bson:"source_url,omitempty" json:"sourceUrl,omitempty"`
 	Origin    string    `bson:"origin" json:"origin"` // "url" | "upload"
-	Content   string    `bson:"content" json:"content"`
+	// SourceKind discriminates between the kinds of upstream source a
+	// doc can be cloned from. Newer than Origin; Origin is kept around
+	// because cmd/migrate-private/main.go still reads it. New code
+	// should switch on SourceKind. Values: "github_blob", "gist",
+	// "url", "upload".
+	SourceKind string `bson:"source_kind,omitempty" json:"sourceKind,omitempty"`
+	Content    string `bson:"content" json:"content"`
 	// Private is true when the source could only be read with GitHub auth.
 	// Readers of the cloned copy must also have GitHub access to {Owner, Repo}.
 	Private    bool   `bson:"private" json:"private"`
@@ -41,6 +47,19 @@ type Document struct {
 	GitHubRepo  string `bson:"github_repo,omitempty" json:"githubRepo,omitempty"`
 	GitHubRef   string `bson:"github_ref,omitempty" json:"githubRef,omitempty"`
 	GitHubPath  string `bson:"github_path,omitempty" json:"githubPath,omitempty"`
+
+	// Gist fields, populated when SourceKind == "gist". GistCommit mirrors
+	// SourceSHA's role for github blobs — both are upstream-content
+	// fingerprints used by the drift-detection machinery. GistFilename
+	// is which file inside the gist this doc was cloned from (the first
+	// file at ingest time); GistFileCount is stored so the "this gist
+	// has N more files" UI affordance doesn't re-hit the gist API on
+	// every render.
+	GistOwner     string `bson:"gist_owner,omitempty" json:"gistOwner,omitempty"`
+	GistID        string `bson:"gist_id,omitempty" json:"gistId,omitempty"`
+	GistCommit    string `bson:"gist_commit,omitempty" json:"gistCommit,omitempty"`
+	GistFilename  string `bson:"gist_filename,omitempty" json:"gistFilename,omitempty"`
+	GistFileCount int    `bson:"gist_file_count,omitempty" json:"gistFileCount,omitempty"`
 
 	// SourceSHA is the GitHub blob SHA of the source file at ingest time.
 	// When non-empty and a fresh check returns a different SHA, the doc has
@@ -78,6 +97,15 @@ type Document struct {
 	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
 }
+
+// SourceKind values. Use these instead of bare strings so the compiler
+// catches typos. Origin is the legacy field still populated alongside.
+const (
+	SourceKindGitHubBlob = "github_blob"
+	SourceKindGist       = "gist"
+	SourceKindURL        = "url"
+	SourceKindUpload     = "upload"
+)
 
 // IndexKind discriminates between the three GitHub URL shapes a
 // markdown-index can target: a single repo (list every .md file in

@@ -438,23 +438,40 @@ func (a *API) createDocument(w http.ResponseWriter, r *http.Request) {
 		doc.Content = fetched.Content
 		doc.SourceURL = req.URL
 		doc.Origin = "url"
+		doc.SourceKind = fetched.Kind
 		doc.Private = fetched.Private
 		doc.GitHubOwner = fetched.Owner
 		doc.GitHubRepo = fetched.Repo
 		doc.GitHubRef = fetched.Ref
 		doc.GitHubPath = fetched.Path
+		doc.GistOwner = fetched.GistOwner
+		doc.GistID = fetched.GistID
+		doc.GistCommit = fetched.GistCommit
+		doc.GistFilename = fetched.GistFilename
+		doc.GistFileCount = fetched.GistFileCount
 		if fetched.SHA != "" {
 			doc.SourceSHA = fetched.SHA
+			now := time.Now().UTC()
+			doc.SourceCheckedAt = &now
+		} else if fetched.GistCommit != "" {
+			// Gists use GistCommit as their drift baseline (not
+			// SourceSHA); but mark SourceCheckedAt so the
+			// maybeRefreshSourceDrift cadence is honored consistently.
 			now := time.Now().UTC()
 			doc.SourceCheckedAt = &now
 		}
 		doc.Title = req.Title
 		if doc.Title == "" {
-			doc.Title = titleFromURL(req.URL)
+			if fetched.GistFilename != "" {
+				doc.Title = fetched.GistFilename
+			} else {
+				doc.Title = titleFromURL(req.URL)
+			}
 		}
 	} else if req.Content != "" {
 		doc.Content = req.Content
 		doc.Origin = "upload"
+		doc.SourceKind = models.SourceKindUpload
 		doc.Title = req.Title
 		if doc.Title == "" {
 			doc.Title = "Untitled"
@@ -884,18 +901,28 @@ func trimDetail(s string) string {
 // their OAuth token (so private repos work). Otherwise it falls back to a plain
 // HTTP fetch against the raw URL.
 // fetchedDoc is what fetchContent returns, including metadata used to gate
-// access to private GitHub-sourced documents on later reads.
+// access to private GitHub-sourced documents on later reads. Kind tells
+// createDocument which source-specific fields are populated; the rest of
+// the struct stays flat to avoid an explosion of nested types.
 type fetchedDoc struct {
+	Kind    string // models.SourceKindGitHubBlob | Gist | URL
 	Content string
 	Private bool
-	Owner   string
-	Repo    string
-	Ref     string
-	Path    string
+	// GitHub blob fields (Kind == github_blob).
+	Owner string
+	Repo  string
+	Ref   string
+	Path  string
 	// SHA is the GitHub blob SHA when the source is a github.com URL. Empty
 	// for non-GitHub sources. Stored on the document so later drift checks
 	// can detect upstream changes.
 	SHA string
+	// Gist fields (Kind == gist).
+	GistOwner     string
+	GistID        string
+	GistCommit    string
+	GistFilename  string
+	GistFileCount int
 }
 
 func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) (*fetchedDoc, error) {
@@ -905,15 +932,14 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 		// we get the markdown body instead. Public gists are anonymous-
 		// readable; secret gists are readable to anyone with the link
 		// (also anonymous). So no auth handoff is needed for either.
-		fetchURL := rawURL
-		if raw, ok := normalizeGistURL(rawURL); ok {
-			fetchURL = raw
+		if gist, ok := parseGistURL(rawURL); ok {
+			return a.fetchGistContent(ctx, gist)
 		}
-		c, err := a.fetchURL(ctx, fetchURL)
+		c, err := a.fetchURL(ctx, rawURL)
 		if err != nil {
 			return nil, err
 		}
-		return &fetchedDoc{Content: c}, nil
+		return &fetchedDoc{Kind: models.SourceKindURL, Content: c}, nil
 	}
 
 	// Try the public raw URL first. If that works the file is public and
@@ -928,6 +954,7 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 			sha = meta.SHA
 		}
 		return &fetchedDoc{
+			Kind:    models.SourceKindGitHubBlob,
 			Content: rawContent,
 			Private: false,
 			Owner:   owner, Repo: repo, Ref: ref, Path: p,
@@ -949,6 +976,7 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 			return nil, err
 		}
 		return &fetchedDoc{
+			Kind:    models.SourceKindGitHubBlob,
 			Content: meta.Content,
 			Private: true,
 			Owner:   owner, Repo: repo, Ref: ref, Path: p,
@@ -959,6 +987,59 @@ func (a *API) fetchContent(ctx context.Context, r *http.Request, rawURL string) 
 	// Not signed in — wrap as FetchError so the friendly handler offers a
 	// "Sign in with GitHub" action.
 	return nil, &auth.FetchError{StatusCode: code, Body: rawErr.Error()}
+}
+
+// gistInfo carries the {owner, id} pair parsed out of a gist URL plus
+// the raw-content URL to fetch. fetchContent uses it for the gist
+// branch; the migration script uses it to backfill existing docs.
+type gistInfo struct {
+	Owner  string
+	ID     string
+	RawURL string
+}
+
+// fetchGistContent does the gist ingest: pulls the raw content, then
+// hits the gist API once for the commit SHA + file listing. We use
+// the API's reported primary filename's raw_url when we can — that's
+// the canonical raw URL for the gist's commit + file — but fall back
+// to /raw if the API call fails, since /raw still returns markdown
+// content (just without a known commit baseline).
+func (a *API) fetchGistContent(ctx context.Context, g gistInfo) (*fetchedDoc, error) {
+	// Try the gist API first so we have a primary filename to anchor
+	// the raw fetch on. The /raw URL the API returns is the canonical
+	// pinned-to-commit URL, which beats the /raw landing redirect
+	// for stability (the landing redirect always points at the head
+	// of the gist; the API URL points at a specific commit).
+	out := &fetchedDoc{
+		Kind:      models.SourceKindGist,
+		GistOwner: g.Owner,
+		GistID:    g.ID,
+	}
+	if meta, err := auth.FetchGistMeta(ctx, "", g.ID); err == nil && meta.PrimaryFilename != "" {
+		file := meta.Files[meta.PrimaryFilename]
+		fetchAt := file.RawURL
+		if fetchAt == "" {
+			fetchAt = g.RawURL
+		}
+		c, ferr := a.fetchURL(ctx, fetchAt)
+		if ferr != nil {
+			return nil, ferr
+		}
+		out.Content = c
+		out.GistCommit = meta.LatestCommit
+		out.GistFilename = meta.PrimaryFilename
+		out.GistFileCount = len(meta.Files)
+		return out, nil
+	}
+	// API call failed (rate limit, network, etc.) — degrade gracefully
+	// by fetching /raw without the metadata. Drift detection will
+	// backfill on the next maybeRefreshSourceDrift cycle.
+	c, err := a.fetchURL(ctx, g.RawURL)
+	if err != nil {
+		return nil, err
+	}
+	out.Content = c
+	return out, nil
 }
 
 // statusCodeFromFetchErr extracts an HTTP status code from an error of the
@@ -1017,44 +1098,47 @@ func (a *API) fetchURL(ctx context.Context, rawURL string) (string, error) {
 	return string(body), nil
 }
 
-// normalizeGistURL rewrites a gist landing-page URL into the URL
-// that returns the raw file content. Returns (rewritten, true) when
-// the input is a gist, otherwise ("", false) so callers can keep the
-// original URL untouched.
+// parseGistURL extracts the owner + gist id (the bits we store on the
+// doc + drive drift detection from) and the URL we should hit to fetch
+// raw content. Returns (info, true) when the input is a gist; otherwise
+// (zero, false) so fetchContent's non-github branch falls through to a
+// plain HTTP fetch.
 //
-// Supported input shapes (single-file gists — multi-file isn't
-// disambiguable from the URL alone, but appending /raw still returns
-// the first file which is what GitHub's own gist viewer does):
-//   - https://gist.github.com/{owner}/{gist_id}
-//   - https://gist.github.com/{owner}/{gist_id}/raw  (passthrough)
-//   - https://gist.githubusercontent.com/...         (already raw)
-func normalizeGistURL(raw string) (string, bool) {
+// Supported input shapes:
+//   - https://gist.github.com/{owner}/{gist_id}               → rewrite to /raw
+//   - https://gist.github.com/{owner}/{gist_id}/raw           → keep
+//   - https://gist.github.com/{owner}/{gist_id}/raw/{sha}/{f} → keep
+//   - https://gist.githubusercontent.com/{owner}/{id}/raw/... → keep,
+//     extract owner + id from path
+func parseGistURL(raw string) (gistInfo, bool) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", false
+		return gistInfo{}, false
 	}
 	host := strings.ToLower(u.Host)
-	if host == "gist.githubusercontent.com" {
-		return raw, true // already a raw URL — no rewrite needed
-	}
-	if host != "gist.github.com" {
-		return "", false
+	if host != "gist.github.com" && host != "gist.githubusercontent.com" {
+		return gistInfo{}, false
 	}
 	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
 	if len(parts) < 2 {
-		return "", false
+		return gistInfo{}, false
 	}
 	owner, gistID := parts[0], parts[1]
 	if owner == "" || gistID == "" {
-		return "", false
+		return gistInfo{}, false
 	}
-	// Already has /raw (with or without commit + filename) — leave as-is.
+	info := gistInfo{Owner: owner, ID: gistID, RawURL: raw}
+	if host == "gist.githubusercontent.com" {
+		return info, true // already pointing at raw content
+	}
+	// Already has /raw (with or without commit + filename) — keep as-is.
 	for _, p := range parts[2:] {
 		if p == "raw" {
-			return raw, true
+			return info, true
 		}
 	}
-	return fmt.Sprintf("https://gist.github.com/%s/%s/raw", owner, gistID), true
+	info.RawURL = fmt.Sprintf("https://gist.github.com/%s/%s/raw", owner, gistID)
+	return info, true
 }
 
 // normalizeGitHubURL converts github.com/{owner}/{repo}/blob/{branch}/{path}

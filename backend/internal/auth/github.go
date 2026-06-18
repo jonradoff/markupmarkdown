@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -290,6 +291,100 @@ func FetchGitHubFileSHA(ctx context.Context, accessToken, owner, repo, ref, path
 		return "", err
 	}
 	return meta.SHA, nil
+}
+
+// GistFile is one file inside a gist, as returned by the gist API. The
+// raw URL is the same URL gist.githubusercontent.com serves; Language
+// is the github-detected language (we don't use it for routing, but
+// store it so a future "pick the .md file from this gist" UI has the
+// data it needs).
+type GistFile struct {
+	Filename string `json:"filename"`
+	RawURL   string `json:"raw_url"`
+	Language string `json:"language"`
+	Type     string `json:"type"`
+	Size     int    `json:"size"`
+	Content  string `json:"content,omitempty"`
+}
+
+// GistMeta is a slim view of GET /gists/<id>. We pull the commit SHA
+// (from history[0].version) for drift detection, the file map for the
+// "N more files" UI affordance, and a precomputed PrimaryFilename so
+// the rest of the codebase doesn't need to re-implement the "pick the
+// first .md, falling back to the first file" rule.
+type GistMeta struct {
+	LatestCommit    string
+	Files           map[string]GistFile
+	PrimaryFilename string
+}
+
+// FetchGistMeta calls GET https://api.github.com/gists/<id>. Public
+// gists work with an empty accessToken (anonymous, IP-rate-limited);
+// secret gists need the owner's OAuth token. Returns the commit SHA
+// (from history[0].version) so drift-detection can compare against
+// it on subsequent reads.
+func FetchGistMeta(ctx context.Context, accessToken, gistID string) (*GistMeta, error) {
+	apiURL := "https://api.github.com/gists/" + url.PathEscape(gistID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &FetchError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+		}
+	}
+	var payload struct {
+		Files   map[string]GistFile `json:"files"`
+		History []struct {
+			Version string `json:"version"`
+		} `json:"history"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	meta := &GistMeta{Files: payload.Files}
+	if len(payload.History) > 0 {
+		meta.LatestCommit = payload.History[0].Version
+	}
+	meta.PrimaryFilename = pickPrimaryGistFile(payload.Files)
+	return meta, nil
+}
+
+// pickPrimaryGistFile picks the first markdown file (.md / .markdown)
+// in the gist, falling back to the first file by lexicographic
+// filename order if no markdown file exists. Range over a map is
+// nondeterministic in Go, so we sort the filenames first to keep the
+// pick stable across calls.
+func pickPrimaryGistFile(files map[string]GistFile) string {
+	if len(files) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		low := strings.ToLower(name)
+		if strings.HasSuffix(low, ".md") || strings.HasSuffix(low, ".markdown") {
+			return name
+		}
+	}
+	return names[0]
 }
 
 // RepoInfo is a slim view of the bits we care about from
