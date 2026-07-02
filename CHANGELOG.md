@@ -8,6 +8,46 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Review-state coordination + push gates + agent-proposed revisions
+  + suggested changes.** Three coordinated primitives shipped together
+  as the P0 recommendations from a research pass on collaborative
+  markdown editing and agentic AI (see [research citations in the
+  README](README.md#design-influences-prior-art) and
+  [CLAUDE.md §15–17](CLAUDE.md)):
+  - **Review states.** Reviewers set `approved | changes_requested |
+    commented` per doc revision — the discrete coordination vocabulary
+    from GitHub PR reviews. Applies equally to humans and agents.
+    New endpoints: `PUT/DELETE /api/documents/:id/review`,
+    `GET /api/documents/:id/reviews`. Doc GET carries
+    `{ reviews, myReview }`. New MCP tool `set_review_state`.
+  - **Push gates.** The pushback flow returns 409 when (a) any
+    reviewer has `changes_requested` set, or (b) the current revision
+    was agent-authored and hasn't been accepted. `POST /pushback`
+    body accepts `force: true` to override; `GET /pushback/info`
+    advises the modal up-front so the UI renders Accept + a force
+    checkbox instead of surprising the user on submit.
+  - **Agent-proposed revisions + accept.** Any revision written under
+    a Bearer token (`edit_document`, `revise_with_ai accept=true`,
+    `merge_from_github`, `apply_suggestion`) lands with
+    `revision_meta.accepted_at = nil`. New
+    `POST /api/documents/:id/accept-revision` stamps it accepted —
+    cookie session only, so a leaked token cannot self-accept. Doc
+    GET carries an `agentProposed` flag.
+  - **Suggested changes.** Comments now carry an optional
+    `suggestion: { replacement }` field. The comment card renders the
+    proposed replacement in a mono block + a one-click Apply button
+    that creates a manual revision (replacing `anchor.exact`) and
+    resolves the comment. New endpoint
+    `POST /api/comments/:id/apply-suggestion`. New MCP tool
+    `add_suggestion` combines `add_comment` + suggestion stamping in
+    one atomic call. Grounded in Brown & Parnin (ESEC/FSE '20) —
+    timing, location, and actionability are what make inline
+    suggestions land.
+  - **Frontend.** New `ReviewBar` component near the top of the doc
+    page: three-button state picker + agent-proposed banner + Accept
+    button. `CommentCard` renders the suggestion block + Apply.
+    SSE subscribes to a new `reviews-updated` event so open viewers
+    refresh live.
 - **Gists as a first-class source kind.** Pasting a gist URL (or
   navigating to `mumd.metavert.io/<owner>/<gist_id>` / the canonical
   `mumd.metavert.io/gist/<owner>/<gist_id>`) now creates a fully-

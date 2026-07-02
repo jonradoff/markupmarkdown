@@ -20,6 +20,15 @@ Three audiences share the same data model:
 
 All three paths route through the same access checks, rate limits, and validation. There is no "agent-only" code path that skips guards.
 
+### Design influences (prior art)
+
+The three review-coordination primitives — review states (§15), agent-proposed revisions with human accept (§16), and structured suggestions (§17) — are grounded in a 2026 research pass on collaborative markdown editing + agentic AI in doc collaboration. Key sources the design leans on:
+
+- **GitHub PR review model** — the three review states (Comment/Approve/Request changes) and the pattern of gating the merge/push on `changes_requested` come directly from here. GitHub's four-year diff-anchor limitation on doc reviews is the reason markupmarkdown anchors to source markdown, not to a diff hunk. ([About pull request reviews — GitHub docs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/about-pull-request-reviews))
+- **Brown & Parnin, ESEC/FSE '20** — empirical validation that timing (in-context), location (line-anchored), and actionability (one-click apply) are the three properties that make inline suggestions valuable. The `add_suggestion` MCP tool + Apply button UX is designed to hit all three. ([Understanding the Impact of GitHub Suggested Changes on Recommendations between Developers, PDF](https://chbrown13.github.io/papers/suggestions.pdf))
+- **GitBook Agent** — the closest shipped prior art for "AI as persistent, addressable reviewer": `@gitbook` is invocable in block-level comments and its edits flow through an explicit change-request abstraction. The markupmarkdown agent-proposed-revision + acceptance flow (§16) is the same shape, applied to a chain of manual revisions where the source of truth is the `.md` file in the repo. ([GitBook Agent — write and edit with AI](https://gitbook.com/docs/gitbook-agent/write-and-edit-with-ai) · [Change requests](https://gitbook.com/docs/collaboration/change-requests))
+- **Notion MCP + Claude Artifacts** — studied and deliberately NOT adopted. Notion's MCP inherits the human's OAuth (agent actions attribute to the human), which would collapse the per-token audit trail markupmarkdown treats as load-bearing. Claude Artifacts' inline-selection edit UX has no review-thread surface, which is exactly what markupmarkdown exists to provide. See `/tmp/markupmarkdown_research_report.md` for the full synthesis + citations.
+
 ---
 
 ## Layout
@@ -208,6 +217,29 @@ Beyond doc-access + scope, [comments.go](backend/internal/api/comments.go) `patc
 ### 14. Credential-setting endpoints are cookie-only
 
 `POST/PATCH/DELETE /api/me/tokens*`, `PUT/DELETE /api/me/anthropic-key`, and any other endpoint that stores or rotates a user credential must reject Bearer-token auth with 403. Pattern: `if _, hasToken := tokenInfoFromRequest(r); hasToken { 403 }`. A leaked token must not be able to swap the user's Anthropic key, mint new tokens, or change scopes on existing ones.
+
+### 15. Review coordination (three review states + push gates)
+
+The doc page carries a per-user review state ([reviews.go](backend/internal/api/reviews.go)): `approved | changes_requested | commented`. Exactly one review per (doc, user) — replace semantics via a deterministic composite `_id` (`docID + ":" + userID`). Agents leave reviews the same way humans do; the coordination surface is the same regardless of actor kind.
+
+Two push gates fire from these primitives ([pushback.go](backend/internal/api/pushback.go), `/api/documents/:id/pushback`):
+
+- If **any** reviewer has `state=changes_requested`, pushback returns 409 `kind=changes_requested` unless the request body sets `force: true`.
+- If the current revision was written by an agent (`revision_meta.actor_kind == "agent"`) AND hasn't been accepted (`accepted_at == nil`), pushback returns 409 `kind=agent_revision_not_accepted` unless `force: true`.
+
+`GET /api/documents/:id/pushback/info` surfaces both gates as booleans so the modal can render Accept + a force checkbox up-front instead of surprising the user on submit.
+
+### 16. Agent revisions are proposed, not accepted, until a human says so
+
+Any revision written under a Bearer token — via `edit_document`, `revise_with_ai accept=true`, `merge_from_github`, or `apply_suggestion` — lands with `revision_meta.actor_kind = "agent"` and `accepted_at = nil`. `POST /api/documents/:id/accept-revision` ([accept_revision.go](backend/internal/api/accept_revision.go)) is the one path to stamp it accepted. **The endpoint refuses Bearer-authed callers** — cookie sessions only, so a leaked token can't self-accept its own revision.
+
+Human-authored revisions and already-accepted revisions no-op through this handler (return the doc unchanged), so the frontend can call it uniformly without inspecting the actor kind.
+
+### 17. Suggested changes are structured, not prose
+
+Comments MAY carry a `suggestion: { replacement }` field ([suggestions.go](backend/internal/api/suggestions.go)). The comment card renders the replacement in a mono block + an Apply button. `POST /api/comments/:id/apply-suggestion` creates a manual revision that replaces `comment.anchor.exact` with `suggestion.replacement`, then resolves the comment. Doc-level comments (no anchor) can't carry suggestions — there's nothing to replace. Reject no-op replacements (`replacement == anchor.exact`) and already-applied suggestions.
+
+When agents want to propose a specific concrete edit, they should use the `add_suggestion` MCP tool (which is `add_comment` + suggestion stamping in one atomic call) rather than free-form prose.
 
 ## Operational notes
 

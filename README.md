@@ -178,7 +178,7 @@ The agent passes the token as `Authorization: Bearer mmk_…` on REST and MCP ca
 
 ### MCP server
 
-Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go). Authenticate every call with `Authorization: Bearer mmk_…`. Fourteen tools cover the same surface humans see in the web UI; every one routes through the same access checks, scope enforcement, validation, and rate-limit buckets as REST — there is no agent-only fast path.
+Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go). Authenticate every call with `Authorization: Bearer mmk_…`. Sixteen tools cover the same surface humans see in the web UI; every one routes through the same access checks, scope enforcement, validation, and rate-limit buckets as REST — there is no agent-only fast path.
 
 #### Reading (`read` scope)
 
@@ -194,10 +194,12 @@ Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`
 | Tool | Purpose |
 |---|---|
 | `add_comment` | Anchor a new thread to a **verbatim substring** of the doc. Pass `occurrence: N` (1-based) when the substring appears multiple times. |
+| `add_suggestion` | Anchor a comment PLUS a structured "replace this with THIS" edit proposal. Reviewers see a one-click Apply button that creates a manual revision — empirically the highest-actionability review artifact. |
 | `reply` | Reply to an existing thread. |
 | `resolve_comment` / `reopen_comment` | Lifecycle. Resolved threads become eligible inputs for `revise_with_ai`. |
 | `patch_anchor` | Re-anchor an orphan comment, or convert any comment to a document-level pin (`doc_level: true`). Mine-only. |
 | `delete_comment` | Remove a thread your token authored. Mine-only — same require-mine guard as REST. |
+| `set_review_state` | Set your discrete review state on a doc: `approved`, `changes_requested`, or `commented`. Mirrors GitHub PR reviews. `changes_requested` blocks the pushback flow until dismissed or force-overridden. |
 
 #### Editing the document (`admin` scope)
 
@@ -206,7 +208,9 @@ Streamable HTTP transport at **`/mcp`**, built on [`github.com/mark3labs/mcp-go`
 | `edit_document` | Save a new manual revision by sending the full new content. Creates a new child doc; unresolved comments carry forward and are re-anchored against the new content. |
 | `revise_with_ai` | Run Claude Opus 4.7 over the doc + selected resolved threads. Preview-only by default (`accept: false`); pass `accept: true` to save as a new child doc. Uses the **human user's** stored Anthropic key. |
 | `merge_from_github` | Reconcile a doc with its upstream GitHub source via a 3-way Claude merge (ancestor = source the revision was based on, ours = current doc, theirs = new upstream). Persists the merged content and re-anchors comments. Trivial cases bypass Claude. |
-| `push_to_github` | Open a pull request from the doc's current content back to its source repo. PR mode only over MCP — direct-commit is web-UI-only for safety. Only push when a human has explicitly asked. |
+| `push_to_github` | Open a pull request from the doc's current content back to its source repo. PR mode only over MCP — direct-commit is web-UI-only for safety. Only push when a human has explicitly asked. **Blocked** by any `changes_requested` review and by unaccepted agent revisions — pass `force: true` only when the human has explicitly overridden. |
+
+Agent revisions land as **proposed**, not accepted. Any revision written under a Bearer token — via `edit_document`, `revise_with_ai accept=true`, `merge_from_github`, or `apply_suggestion` — sits in the chain immediately but the pushback flow refuses to ship it to GitHub until a human accepts via `POST /api/documents/:id/accept-revision` (cookie-only; agents cannot self-accept). This is the GitBook change-request pattern applied to markupmarkdown: agents are first-class reviewers, not autonomous committers.
 
 The full agent guide — conventions, identity model, rate limits, scope hierarchy, when-to-edit-vs-revise-vs-merge, and out-of-scope actions — lives at [`skills/markupmarkdown/SKILL.md`](skills/markupmarkdown/SKILL.md) and is served live at <https://mumd.metavert.io/SKILL.md>.
 
@@ -458,6 +462,18 @@ GET    /SKILL.md                                canonical SKILL.md (raw markdown
 - **SSRF guard**: the URL fetcher refuses to dial RFC1918, loopback, link-local, metadata, and CGNAT IPs at both initial connection and every redirect.
 - **Rate limits + body caps + concurrency semaphores** keep a single Fly machine resilient against burst load and abusive clients. See `backend/internal/limits/`.
 - **MCP server**: streamable HTTP at `/mcp`, Bearer-auth, every tool routes through the same access checks as the REST API.
+- **Review-state coordination**: reviewers pick one of `approved | changes_requested | commented` per doc revision. `changes_requested` blocks the pushback flow until dismissed or the pusher sets `force: true`. Agents leave reviews via the same surface humans do; the gate treats them alike. See [backend/internal/api/reviews.go](backend/internal/api/reviews.go).
+- **Suggested changes**: comments may carry a structured `{ replacement }` field; the comment card renders a one-click Apply that creates a manual revision replacing the anchored text. Grounded in [Brown & Parnin, ESEC/FSE '20](https://chbrown13.github.io/papers/suggestions.pdf): timing, location, and actionability are the three properties that make inline suggestions land. See [backend/internal/api/suggestions.go](backend/internal/api/suggestions.go).
+- **Agent-proposed revisions**: revisions written under a Bearer token land unaccepted; pushback refuses to ship them until a human clicks Accept (cookie session only — the endpoint rejects Bearer callers, so a leaked token cannot self-accept). This is the [GitBook change-request pattern](https://gitbook.com/docs/collaboration/change-requests) applied to markupmarkdown's chain: agents are first-class reviewers, not autonomous committers. See [backend/internal/api/accept_revision.go](backend/internal/api/accept_revision.go).
+
+### Design influences (prior art)
+
+The review-coordination primitives above are grounded in a 2026 research pass on collaborative markdown editing + agentic AI in doc collaboration. Load-bearing citations:
+
+- **GitHub — [About pull request reviews](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/about-pull-request-reviews)** — the three review states + suggested-changes UX. Also the source of the design insight that comments should anchor to source markdown rather than to diff hunks: GitHub's [four-year diff-anchor limitation](https://github.com/orgs/community/discussions/4452) on doc reviews is the friction markupmarkdown is structurally immune to.
+- **Brown & Parnin, ESEC/FSE '20 — [Understanding the Impact of GitHub Suggested Changes on Recommendations between Developers](https://chbrown13.github.io/papers/suggestions.pdf)** — peer-reviewed empirical grounding for the timing / location / actionability triad that `add_suggestion` targets.
+- **GitBook Agent — [write and edit with AI](https://gitbook.com/docs/gitbook-agent/write-and-edit-with-ai) + [Change requests](https://gitbook.com/docs/collaboration/change-requests)** — closest shipped prior art for "AI as persistent, addressable reviewer." The agent-proposed-revision + human-accept flow is the same shape.
+- **[Notion MCP](https://developers.notion.com/docs/mcp) + [Claude Artifacts](https://support.claude.com/en/articles/9487310-what-are-artifacts-and-how-do-i-use-them)** — studied and *deliberately not adopted*. Notion's OAuth-inheritance model would collapse the per-token agent audit trail; Claude Artifacts' inline-only, no-review-thread paradigm is exactly what markupmarkdown exists to complete.
 
 ## Build checks
 
