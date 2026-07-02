@@ -38,6 +38,8 @@ Everything you'd expect from a Google-Docs-style review experience, in a codebas
 
 - **Open any markdown file** — paste a URL (raw URL or `github.com/.../blob/.../*.md`, we auto-rewrite) or upload from your computer. Relative image refs (`<img src=".github/logo.svg">`) resolve against the source so READMEs render properly.
 - **Drag-select text → comment**. Click the floating "Comment" button, type, submit. Use `@username` to mention someone — they get an in-app notification.
+- **Suggested changes** — leave a comment with a *concrete replacement* for the anchored text; reviewers see a one-click *Apply* button that creates a manual revision with the substitution. Same UX as GitHub's suggested changes — empirically the highest-actionability review artifact.
+- **Review states** — three-button coordination bar at the top of every doc: *Comment*, *Approve*, *Request changes*. Mirrors GitHub PR reviews. Setting *Request changes* blocks the Push-to-GitHub flow until you dismiss it or the pusher explicitly overrides. Applies equally to humans and agents.
 - **Threaded replies**, mark-as-done, reopen, edit, delete. Same model your team already knows.
 - **Realtime sync**: every change propagates to every other open tab in <1s via Server-Sent Events.
 - **Unread filter pill** — shows you only the threads with new activity since your last visit, with a count badge.
@@ -85,8 +87,9 @@ The home page surfaces *Your indexes* above *Your documents* so a saved index be
 ### Agent collaboration (new — see [Agents](#agents) below)
 
 - **Personal access tokens** authenticate scripts and agents to the same REST API humans use.
-- **MCP server** at `/mcp` exposes the review primitives as Model Context Protocol tools — any MCP-aware agent (Claude Code, Claude Agent SDK apps, custom tools) can read docs, leave threads, reply to humans, resolve, and trigger AI revisions with human approval.
+- **MCP server** at `/mcp` exposes the review primitives as Model Context Protocol tools — any MCP-aware agent (Claude Code, Claude Agent SDK apps, custom tools) can read docs, leave threads, propose suggested edits, set review states, reply to humans, resolve, and trigger AI revisions with human approval.
 - **Agent identity badges** — comments and replies created via a token marked "for an agent" get a small bot badge so humans can scan a thread and instantly see who's whom.
+- **Agents are reviewers, not autonomous committers.** Any revision an agent writes lands *proposed* — the pushback flow refuses to ship it to GitHub until a human accepts via the *Accept revision* button (cookie session only; agents cannot self-accept). Direct port of the GitBook change-request pattern applied to markupmarkdown's revision chain.
 
 ## Lightweight by design
 
@@ -216,7 +219,7 @@ The full agent guide — conventions, identity model, rate limits, scope hierarc
 
 ### Examples
 
-All seven examples below are real MCP requests against the live `/mcp` endpoint. Each `"name"` matches the tool in the tables above; `arguments` is the literal payload.
+All nine examples below are real MCP requests against the live `/mcp` endpoint. Each `"name"` matches the tool in the tables above; `arguments` is the literal payload.
 
 #### 1. Read a doc and its open threads
 
@@ -265,6 +268,37 @@ If the quoted text appears multiple times in the doc, the tool returns an error 
     "body": "Sources for the original benchmark: [link]. I can produce a revised graph if useful."
   }
 }
+```
+
+#### 3b. Suggest a specific concrete edit (one-click Apply for the reviewer)
+
+```jsonc
+{
+  "name": "add_suggestion",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "quoted_text": "Beamable is a game backend platform.",
+    "replacement": "Beamable is a modular, extensible game backend platform.",
+    "body": "Adding \"modular, extensible\" to reflect the bundle system in §3."
+  }
+}
+// → comment with { suggestion: { replacement: ... } }
+// The reviewer sees an Apply button that creates the manual revision.
+```
+
+#### 3c. Block a push until an issue is addressed
+
+```jsonc
+{
+  "name": "set_review_state",
+  "arguments": {
+    "document_id": "a3f7c2...",
+    "state": "changes_requested",
+    "note": "The identity-resolution section is stale relative to the 0.3 API."
+  }
+}
+// → pushback flow returns 409 kind=changes_requested until dismissed
+//   (call set_review_state again with state=commented or state=approved).
 ```
 
 #### 4. Apply resolved comments as a new revision (with human approval)

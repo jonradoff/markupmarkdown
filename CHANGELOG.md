@@ -6,14 +6,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] — 2026-07-02
+
+Review-coordination release. The first batch of changes grounded in the
+2026 research pass on collaborative markdown editing + agentic AI in
+doc collaboration (see [Design influences](README.md#design-influences-prior-art)
+in the README and CLAUDE.md §15–17).
+
 ### Added
 
 - **Review-state coordination + push gates + agent-proposed revisions
   + suggested changes.** Three coordinated primitives shipped together
-  as the P0 recommendations from a research pass on collaborative
-  markdown editing and agentic AI (see [research citations in the
-  README](README.md#design-influences-prior-art) and
-  [CLAUDE.md §15–17](CLAUDE.md)):
+  as the P0 recommendations from the research pass:
   - **Review states.** Reviewers set `approved | changes_requested |
     commented` per doc revision — the discrete coordination vocabulary
     from GitHub PR reviews. Applies equally to humans and agents.
@@ -32,7 +38,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `revision_meta.accepted_at = nil`. New
     `POST /api/documents/:id/accept-revision` stamps it accepted —
     cookie session only, so a leaked token cannot self-accept. Doc
-    GET carries an `agentProposed` flag.
+    GET carries an `agentProposed` flag. Direct port of the GitBook
+    change-request pattern.
   - **Suggested changes.** Comments now carry an optional
     `suggestion: { replacement }` field. The comment card renders the
     proposed replacement in a mono block + a one-click Apply button
@@ -48,6 +55,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     button. `CommentCard` renders the suggestion block + Apply.
     SSE subscribes to a new `reviews-updated` event so open viewers
     refresh live.
+
+## [0.2.0] — 2026-06-18
+
+Big accumulated release covering gists as a first-class source kind,
+markdown indexes (with server-side caching + filename filter + owner
+pinning + human-URL canonicalization), the human-URL system, editor +
+comment card polish, source-drift + 3-way merge, the pushback (GitHub
+round-trip) flow, and the shift to a per-run MongoDB test container.
+
+### Added
+
 - **Gists as a first-class source kind.** Pasting a gist URL (or
   navigating to `mumd.metavert.io/<owner>/<gist_id>` / the canonical
   `mumd.metavert.io/gist/<owner>/<gist_id>`) now creates a fully-
