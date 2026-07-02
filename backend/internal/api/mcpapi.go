@@ -88,6 +88,77 @@ func (a *API) LogTokenAction(ctx context.Context, tokenID, action, docID string)
 // validation rules without importing internal handlers.
 func (a *API) ValidateCommentBody(body string) (string, error) { return ValidateCommentBody(body) }
 func (a *API) ValidateReplyBody(body string) (string, error)   { return ValidateReplyBody(body) }
+func (a *API) ValidateReviewState(state string) (models.ReviewState, error) {
+	return ValidateReviewState(state)
+}
+
+// SetReviewState is the MCP bridge for the review-state surface.
+// Reuses the same store method as the REST handler and broadcasts
+// the same SSE event so open viewers refresh live.
+// AddSuggestion creates an anchored comment carrying a structured
+// suggestion (P0-2). Delegates to CreateComment for the anchoring +
+// validation + rate-limit round, then stamps the Suggestion field
+// atomically on the newly-created document. Returns the fully-
+// populated comment (with Suggestion) so the caller sees the same
+// shape as add_comment.
+func (a *API) AddSuggestion(ctx context.Context, userID, docID, body, quotedText string, occurrence int, replacement, tokenID, agentLabel string) (*models.Comment, error) {
+	if replacement == "" {
+		return nil, errors.New("`replacement` is required for a suggestion")
+	}
+	if quotedText == "" {
+		return nil, errors.New("`quoted_text` is required — doc-level suggestions can't carry a replacement")
+	}
+	if quotedText == replacement {
+		return nil, errors.New("`replacement` is identical to `quoted_text` — nothing to suggest")
+	}
+	c, err := a.CreateComment(ctx, userID, docID, body, quotedText, occurrence, tokenID, agentLabel)
+	if err != nil {
+		return nil, err
+	}
+	// Stamp the suggestion in place. If this fails, the comment still
+	// exists — surface the store error but don't roll back the
+	// comment.
+	if _, err := a.store.Comments().UpdateOne(ctx,
+		bson.M{"_id": c.ID},
+		bson.M{"$set": bson.M{"suggestion": bson.M{"replacement": replacement}}}); err != nil {
+		return nil, sanitizeStoreErr("mcp.add_suggestion.stamp", err)
+	}
+	c.Suggestion = &models.Suggestion{Replacement: replacement}
+	return c, nil
+}
+
+func (a *API) SetReviewState(ctx context.Context, userID, docID, stateStr, note, tokenID string) (*models.Review, error) {
+	state, err := ValidateReviewState(stateStr)
+	if err != nil {
+		return nil, err
+	}
+	rec := &models.Review{
+		DocumentID: docID,
+		UserID:     userID,
+		State:      state,
+		Note:       note,
+		TokenID:    tokenID,
+	}
+	if tokenID != "" {
+		rec.ActorKind = models.ActorAgent
+	} else {
+		rec.ActorKind = models.ActorHuman
+	}
+	if err := a.store.UpsertReview(ctx, rec); err != nil {
+		return nil, sanitizeStoreErr("mcp.set_review.upsert", err)
+	}
+	a.hub.Broadcast(docID, "reviews-updated")
+	got, err := a.store.GetReview(ctx, docID, userID)
+	if err != nil {
+		return nil, sanitizeStoreErr("mcp.set_review.get", err)
+	}
+	if got == nil {
+		got = rec
+	}
+	a.resolveReviewIdentities(ctx, []models.Review{*got})
+	got.Mine = true
+	return got, nil
+}
 
 func (a *API) DocAccess(ctx context.Context, userID, docID, accessToken string) (*models.Document, error) {
 	doc, err := a.store.GetDocument(ctx, docID)

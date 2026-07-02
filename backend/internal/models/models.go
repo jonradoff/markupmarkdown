@@ -198,6 +198,70 @@ type RevisionMeta struct {
 	// based on. Used as the "common ancestor" in 3-way merge. Excluded
 	// from JSON to avoid doubling the size of every doc response.
 	AncestorContent string `bson:"ancestor_content,omitempty" json:"-"`
+	// AcceptedAt is stamped when a human explicitly accepts an
+	// agent-authored revision. Only populated when ActorKind == agent.
+	// The pushback flow (pushback.go) refuses to push an agent-authored
+	// revision to GitHub until it's accepted, so this is the audit
+	// trail for that gate.
+	AcceptedAt   *time.Time `bson:"accepted_at,omitempty" json:"acceptedAt,omitempty"`
+	AcceptedByID string     `bson:"accepted_by_id,omitempty" json:"-"`
+	AcceptedBy   string     `bson:"accepted_by,omitempty" json:"acceptedBy,omitempty"`
+}
+
+// ReviewState is the discrete coordination vocabulary a reviewer picks.
+// Mirrors GitHub PR review states. Absence of a review is equivalent to
+// no state at all (not "commented"); the "commented" state is an
+// explicit signal from a reviewer who wants to record participation
+// without approving or blocking. `changes_requested` blocks the
+// pushback flow (see pushback.go) until dismissed by the reviewer or
+// force-overridden.
+type ReviewState string
+
+const (
+	ReviewStateApproved         ReviewState = "approved"
+	ReviewStateChangesRequested ReviewState = "changes_requested"
+	ReviewStateCommented        ReviewState = "commented"
+)
+
+// Review is a per-doc-per-user review record. Exactly one Review per
+// (document_id, user_id) pair — the ID is deterministic (docID +
+// ":" + userID) so upserts stay atomic without a compound index.
+// Reviews live on the specific doc revision they were set on; new
+// child revisions start with a fresh (empty) review surface, same as
+// GitHub PRs dismiss stale reviews when new commits land.
+//
+// The display fields (Author, OwnerName, OwnerLogin, AuthorAvatarURL)
+// are `bson:"-"` because they're resolved at read time from the
+// current token + user records, so renames propagate everywhere. Same
+// pattern as Comment.
+type Review struct {
+	ID         string      `bson:"_id" json:"-"`
+	DocumentID string      `bson:"document_id" json:"documentId"`
+	UserID     string      `bson:"user_id" json:"-"`
+	State      ReviewState `bson:"state" json:"state"`
+	Note       string      `bson:"note,omitempty" json:"note,omitempty"`
+
+	// TokenID is populated for reviews written via a Bearer token
+	// (MCP or REST). Empty for cookie-session reviews.
+	TokenID         string    `bson:"token_id,omitempty" json:"-"`
+	ActorKind       ActorKind `bson:"actor_kind,omitempty" json:"actorKind,omitempty"`
+	Author          string    `bson:"-" json:"author,omitempty"`
+	AuthorAvatarURL string    `bson:"-" json:"authorAvatarUrl,omitempty"`
+	OwnerName       string    `bson:"-" json:"ownerName,omitempty"`
+	OwnerLogin      string    `bson:"-" json:"ownerLogin,omitempty"`
+	Mine            bool      `bson:"-" json:"mine,omitempty"`
+
+	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updatedAt"`
+}
+
+// ReviewSummary is the aggregate view exposed on document responses so
+// the SPA can render "3 approved / 1 requested changes" without
+// listing individual reviewers.
+type ReviewSummary struct {
+	Approved         int `json:"approved"`
+	ChangesRequested int `json:"changesRequested"`
+	Commented        int `json:"commented"`
 }
 
 // UserSecrets holds per-user encrypted credentials. One document per user.
@@ -363,8 +427,29 @@ type Comment struct {
 	// card's "previously highlighted" blockquote so reviewers know what
 	// the comment was about.
 	OriginalExact string `bson:"original_exact,omitempty" json:"originalExact,omitempty"`
+	// Suggestion is an optional structured edit proposal — the comment
+	// says "replace the anchored text with THIS." The frontend renders
+	// a one-click Apply button when present (empirically the highest-
+	// actionability review artifact — see Brown & Parnin ESEC/FSE '20).
+	// Applying creates a manual revision and resolves the comment.
+	// Doc-level comments (Anchor.Exact == "") can't carry suggestions
+	// because there's nothing to replace.
+	Suggestion *Suggestion `bson:"suggestion,omitempty" json:"suggestion,omitempty"`
 	// Mine is computed at read time. See Reply.Mine for semantics.
 	Mine       bool      `bson:"-" json:"mine,omitempty"`
 	CreatedAt  time.Time `bson:"created_at" json:"createdAt"`
 	UpdatedAt  time.Time `bson:"updated_at" json:"updatedAt"`
+}
+
+// Suggestion is a structured edit proposal on an anchored comment.
+// Replacement is the text that should replace the comment's Anchor.Exact
+// span in the source markdown. AppliedAt / AppliedByID / AppliedBy are
+// stamped when a reviewer clicks Apply, so subsequent viewers can see
+// the suggestion was already used.
+type Suggestion struct {
+	Replacement   string     `bson:"replacement" json:"replacement"`
+	AppliedAt     *time.Time `bson:"applied_at,omitempty" json:"appliedAt,omitempty"`
+	AppliedByID   string     `bson:"applied_by_id,omitempty" json:"-"`
+	AppliedBy     string     `bson:"applied_by,omitempty" json:"appliedBy,omitempty"`
+	AppliedDocID  string     `bson:"applied_doc_id,omitempty" json:"appliedDocId,omitempty"`
 }

@@ -106,6 +106,22 @@ func (a *API) Register(r *mux.Router) {
 	r.HandleFunc("/api/documents/{id}/edit-lock", a.releaseEditLock).Methods("DELETE")
 	r.HandleFunc("/api/documents/{id}/mention-candidates", a.listMentionCandidates).Methods("GET")
 
+	// Review states (P0-1): coordination vocabulary beyond free-form
+	// comments. See reviews.go for the pushback push-gate consequence.
+	r.HandleFunc("/api/documents/{id}/review", a.setReview).Methods("PUT")
+	r.HandleFunc("/api/documents/{id}/review", a.deleteReview).Methods("DELETE")
+	r.HandleFunc("/api/documents/{id}/reviews", a.listReviews).Methods("GET")
+
+	// Agent-proposed revision acceptance (P0-3). Human-only endpoint —
+	// pushback refuses to ship an agent-authored revision until it's
+	// been explicitly accepted here.
+	r.HandleFunc("/api/documents/{id}/accept-revision", a.acceptAgentRevision).Methods("POST")
+
+	// Suggested-change apply (P0-2). Reads the comment's Suggestion,
+	// creates a manual revision that replaces the anchor with the
+	// suggested replacement, and resolves the comment.
+	r.HandleFunc("/api/comments/{id}/apply-suggestion", a.applySuggestion).Methods("POST")
+
 	r.HandleFunc("/api/me/notifications", a.listNotifications).Methods("GET")
 	r.HandleFunc("/api/me/notifications/read", a.markAllNotificationsRead).Methods("POST")
 	r.HandleFunc("/api/me/notifications/{id}/read", a.markNotificationRead).Methods("POST")

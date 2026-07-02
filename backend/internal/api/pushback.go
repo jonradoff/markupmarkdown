@@ -37,6 +37,11 @@ type pushbackInfoResponse struct {
 	SuggestedPRTitle string `json:"suggestedPRTitle"`
 	SuggestedPRBody  string `json:"suggestedPRBody"`
 	RepoHTMLURL    string `json:"repoHtmlUrl"`
+	// Push-gate advisories (P0-1, P0-3). Populated so the frontend
+	// can render a warning + a "push anyway" checkbox rather than
+	// have the request itself 409 on first submit.
+	ChangesRequested bool `json:"changesRequested,omitempty"`
+	AgentProposed    bool `json:"agentProposed,omitempty"`
 }
 
 // pushbackInfo handles GET /api/documents/:id/pushback/info. Lets the
@@ -71,6 +76,14 @@ func (a *API) pushbackInfo(w http.ResponseWriter, r *http.Request) {
 		defaultBranch = ref
 	}
 
+	// Push-gate advisories: the response carries them so the modal
+	// can display the state up front. The actual gate enforcement
+	// happens in `pushback` (below) — this is just a UX signal.
+	changesRequested, _ := a.store.AnyChangesRequested(r.Context(), doc.ID)
+	agentProposed := doc.RevisionMeta != nil &&
+		doc.RevisionMeta.ActorKind == models.ActorAgent &&
+		doc.RevisionMeta.AcceptedAt == nil
+
 	writeJSON(w, http.StatusOK, pushbackInfoResponse{
 		Owner:            owner,
 		Repo:             repo,
@@ -84,6 +97,8 @@ func (a *API) pushbackInfo(w http.ResponseWriter, r *http.Request) {
 		SuggestedPRTitle: defaultPRTitle(doc),
 		SuggestedPRBody:  defaultPRBody(doc, a.cfg.Frontend.URL),
 		RepoHTMLURL:      info.HTMLURL,
+		ChangesRequested: changesRequested,
+		AgentProposed:    agentProposed,
 	})
 }
 
@@ -103,6 +118,11 @@ type pushbackRequest struct {
 	// against (the base). Defaults to the repo's default branch when
 	// empty.
 	TargetBranch string `json:"targetBranch,omitempty"`
+	// Force explicitly overrides push gates (changes-requested
+	// reviews, un-accepted agent revisions). The frontend surfaces
+	// these as a checkbox in the pushback modal. Off by default —
+	// gates fire with a 409 the caller can retry with force=true.
+	Force bool `json:"force,omitempty"`
 }
 
 type pushbackResponse struct {
@@ -154,6 +174,29 @@ func (a *API) pushback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "mode must be 'pr' or 'direct'")
 		return
 	}
+
+	// Push gates (P0-1, P0-3). Both fail closed unless the caller
+	// explicitly sends force=true. The 409 response body names the
+	// specific gate so the frontend can render the right modal copy.
+	if !req.Force {
+		if doc.RevisionMeta != nil &&
+			doc.RevisionMeta.ActorKind == models.ActorAgent &&
+			doc.RevisionMeta.AcceptedAt == nil {
+			writeJSON(w, http.StatusConflict, fetchErrorResponse{
+				Error: "This revision was authored by an agent and hasn't been accepted yet. Accept it first, or push with 'force' to override.",
+				Kind:  "agent_revision_not_accepted",
+			})
+			return
+		}
+		if blocked, _ := a.store.AnyChangesRequested(r.Context(), doc.ID); blocked {
+			writeJSON(w, http.StatusConflict, fetchErrorResponse{
+				Error: "At least one reviewer has requested changes on this revision. Address the review (or dismiss it), or push with 'force' to override.",
+				Kind:  "changes_requested",
+			})
+			return
+		}
+	}
+
 	commitMsg := strings.TrimSpace(req.CommitMessage)
 	if commitMsg == "" {
 		commitMsg = defaultCommitMessage(doc)

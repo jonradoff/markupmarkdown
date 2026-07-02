@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -114,6 +115,21 @@ func (s *stubAPI) ValidateReplyBody(b string) (string, error) {
 	}
 	return strings.TrimSpace(b), nil
 }
+func (s *stubAPI) SetReviewState(_ context.Context, _, _, state, _, _ string) (*models.Review, error) {
+	return &models.Review{State: models.ReviewState(state)}, nil
+}
+func (s *stubAPI) AddSuggestion(_ context.Context, _, _, _, _ string, _ int, replacement, _, _ string) (*models.Comment, error) {
+	return &models.Comment{Suggestion: &models.Suggestion{Replacement: replacement}}, nil
+}
+func (s *stubAPI) ValidateReviewState(state string) (models.ReviewState, error) {
+	switch models.ReviewState(state) {
+	case models.ReviewStateApproved, models.ReviewStateChangesRequested, models.ReviewStateCommented:
+		return models.ReviewState(state), nil
+	}
+	return "", errStubBadState
+}
+
+var errStubBadState = errors.New("state must be one of: approved, changes_requested, commented")
 
 // --- wrapAuth tests ---
 

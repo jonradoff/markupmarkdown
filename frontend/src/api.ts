@@ -16,6 +16,8 @@ import type {
   PatchAnchorRequest,
   PushbackInfo,
   PushbackResult,
+  Review,
+  ReviewState,
   RevisionPreview,
   SelfDocRedirect,
   SyncSourceResponse,
@@ -489,7 +491,9 @@ export const api = {
       holderId?: string;
       expires?: string;
     }>(`/api/documents/${documentId}/edit-lock`),
-  /** Commit the doc back to its source repo. Mode picks PR vs direct. */
+  /** Commit the doc back to its source repo. Mode picks PR vs direct.
+   * `force` overrides push gates (changes-requested reviews or
+   * unaccepted agent revisions) when true. */
   pushback: (
     documentId: string,
     payload: {
@@ -499,11 +503,49 @@ export const api = {
       targetBranch?: string;
       prTitle?: string;
       prBody?: string;
+      force?: boolean;
     }
   ) =>
     req<PushbackResult>(`/api/documents/${documentId}/pushback`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+
+  // --- P0-1: Review states ---
+  /** Set the current viewer's review state on a doc. Idempotent —
+   * setting the same state twice just bumps updated_at. */
+  setReview: (documentId: string, state: ReviewState, note?: string) =>
+    req<Review>(`/api/documents/${documentId}/review`, {
+      method: "PUT",
+      body: JSON.stringify({ state, note }),
+    }),
+  /** Clear the current viewer's review. Returns 204 whether or not a
+   * review existed to remove. */
+  deleteReview: (documentId: string) =>
+    req<void>(`/api/documents/${documentId}/review`, { method: "DELETE" }),
+  /** Every review on this doc, newest first, for the reviewer-list
+   * surface. The doc GET response already carries a ReviewSummary +
+   * MyReview — call this only when you need the full list. */
+  listReviews: (documentId: string) =>
+    req<Review[]>(`/api/documents/${documentId}/reviews`),
+
+  // --- P0-2: Suggested changes ---
+  /** Apply the suggestion attached to a comment. Creates a manual
+   * revision that replaces the comment's Anchor.Exact with the
+   * suggestion's Replacement, then stamps the comment as resolved +
+   * applied. Returns the newly-created child doc. */
+  applySuggestion: (commentId: string) =>
+    req<MdDocument>(`/api/comments/${commentId}/apply-suggestion`, {
+      method: "POST",
+    }),
+
+  // --- P0-3: Agent revision acceptance ---
+  /** Human-only endpoint that flips revision_meta.accepted_at on an
+   * agent-authored revision, clearing the pushback gate. Idempotent
+   * for human-authored / already-accepted revisions. */
+  acceptAgentRevision: (documentId: string) =>
+    req<MdDocument>(`/api/documents/${documentId}/accept-revision`, {
+      method: "POST",
     }),
 
   listTokens: () => req<APIToken[]>("/api/me/tokens"),

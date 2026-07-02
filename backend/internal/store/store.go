@@ -68,6 +68,7 @@ func (s *Store) TokenEvents() *mongo.Collection    { return s.db.Collection("tok
 func (s *Store) Indexes() *mongo.Collection        { return s.db.Collection("indexes") }
 func (s *Store) HiddenItems() *mongo.Collection    { return s.db.Collection("hidden_items") }
 func (s *Store) IndexItems() *mongo.Collection     { return s.db.Collection("index_items") }
+func (s *Store) Reviews() *mongo.Collection        { return s.db.Collection("reviews") }
 
 func (s *Store) ensureIndexes(ctx context.Context) {
 	_, _ = s.Documents().Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -124,6 +125,105 @@ func (s *Store) ensureIndexes(ctx context.Context) {
 		// Toggle / dedupe key — one row per (user, kind, item).
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}, {Key: "item_id", Value: 1}}, Options: options.Index().SetUnique(true)},
 	})
+	_, _ = s.Reviews().Indexes().CreateMany(ctx, []mongo.IndexModel{
+		// List by doc (rendered in the doc header / sidebar).
+		{Keys: bson.D{{Key: "document_id", Value: 1}}},
+		// Push-gate check: is any review on this doc in changes_requested?
+		{Keys: bson.D{{Key: "document_id", Value: 1}, {Key: "state", Value: 1}}},
+	})
+}
+
+// ReviewID returns the deterministic composite _id we use for the
+// reviews collection: docID:userID. Exactly one review per (doc, user).
+// Not exposed on the API — the client operates on state, not on
+// review IDs.
+func ReviewID(docID, userID string) string { return docID + ":" + userID }
+
+// UpsertReview creates-or-updates the current user's review on a doc.
+// Idempotent: re-setting the same state just bumps updated_at.
+func (s *Store) UpsertReview(ctx context.Context, r *models.Review) error {
+	if r.DocumentID == "" || r.UserID == "" {
+		return fmt.Errorf("upsert review: missing document_id or user_id")
+	}
+	if r.ID == "" {
+		r.ID = ReviewID(r.DocumentID, r.UserID)
+	}
+	now := time.Now().UTC()
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	r.UpdatedAt = now
+	_, err := s.Reviews().UpdateOne(ctx,
+		bson.M{"_id": r.ID},
+		bson.M{
+			"$set": bson.M{
+				"document_id": r.DocumentID,
+				"user_id":     r.UserID,
+				"state":       r.State,
+				"note":        r.Note,
+				"token_id":    r.TokenID,
+				"actor_kind":  r.ActorKind,
+				"updated_at":  now,
+			},
+			"$setOnInsert": bson.M{
+				"created_at": r.CreatedAt,
+			},
+		},
+		options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+// DeleteReview clears the current user's review on a doc. Returns
+// (deleted, err) — deleted is false when no review existed to remove.
+func (s *Store) DeleteReview(ctx context.Context, docID, userID string) (bool, error) {
+	res, err := s.Reviews().DeleteOne(ctx, bson.M{"_id": ReviewID(docID, userID)})
+	if err != nil {
+		return false, err
+	}
+	return res.DeletedCount > 0, nil
+}
+
+// GetReview returns the current user's review on a doc, or nil if none.
+func (s *Store) GetReview(ctx context.Context, docID, userID string) (*models.Review, error) {
+	var r models.Review
+	err := s.Reviews().FindOne(ctx, bson.M{"_id": ReviewID(docID, userID)}).Decode(&r)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ListReviews returns every review on a doc, newest first, for the
+// aggregate + reviewer-list surfaces.
+func (s *Store) ListReviews(ctx context.Context, docID string) ([]models.Review, error) {
+	cur, err := s.Reviews().Find(ctx,
+		bson.M{"document_id": docID},
+		options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	var out []models.Review
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AnyChangesRequested is the pushback push-gate primitive: returns
+// true if at least one reviewer has state=changes_requested on this
+// doc. Cheap — indexed lookup with limit 1.
+func (s *Store) AnyChangesRequested(ctx context.Context, docID string) (bool, error) {
+	n, err := s.Reviews().CountDocuments(ctx,
+		bson.M{"document_id": docID, "state": string(models.ReviewStateChangesRequested)},
+		options.Count().SetLimit(1))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // HideItem marks an item as hidden from the user's personal lists.

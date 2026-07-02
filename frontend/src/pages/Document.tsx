@@ -20,6 +20,7 @@ import DocumentToolbar from "../components/DocumentToolbar";
 import { FilterButton, Count } from "../components/CommentFilterButtons";
 import CommentStepNav from "../components/CommentStepNav";
 import SourceDriftBanner from "../components/SourceDriftBanner";
+import ReviewBar from "../components/ReviewBar";
 import MergeModal from "../components/MergeModal";
 import EditorPane, { type EditorPaneHandle } from "../components/EditorPane";
 import PushbackModal from "../components/PushbackModal";
@@ -590,12 +591,14 @@ export default function DocumentPage() {
     };
     es.addEventListener("comments-updated", onUpdate);
     es.addEventListener("doc-updated", onDocUpdate);
+    es.addEventListener("reviews-updated", onDocUpdate);
     es.addEventListener("edit-lock-changed", onEditLockChanged);
     es.addEventListener("hello", onHello);
     es.onopen = onOpen;
     return () => {
       es.removeEventListener("comments-updated", onUpdate);
       es.removeEventListener("doc-updated", onDocUpdate);
+      es.removeEventListener("reviews-updated", onDocUpdate);
       es.removeEventListener("edit-lock-changed", onEditLockChanged);
       es.removeEventListener("hello", onHello);
       es.close();
@@ -939,6 +942,18 @@ export default function DocumentPage() {
       toastError(err, "Couldn't reopen that comment.");
     }
   }
+  async function handleApplySuggestion(c: Comment) {
+    if (!id || !c.suggestion) return;
+    try {
+      const newDoc = await api.applySuggestion(c.id);
+      // The apply created a new doc — navigate to it so the reviewer
+      // sees the change reflected in the source.
+      navigate(`/d/${newDoc.id}`);
+    } catch (err) {
+      toastError(err, "Couldn't apply that suggestion.");
+      throw err;
+    }
+  }
   async function handleReply(c: Comment, body: string) {
     const author = user?.name || user?.login || getAuthor() || "Anonymous";
     try {
@@ -1268,6 +1283,26 @@ export default function DocumentPage() {
             />
           )}
 
+          {/* Review-state buttons + agent-proposed banner (P0-1, P0-3).
+              Rendered high in the doc surface so the coordination
+              state is visible before the reviewer scrolls. Only for
+              signed-in humans. Bearer-token users don't see this
+              surface — they get the same primitives over MCP. */}
+          {user && id && (
+            <ReviewBar
+              doc={doc}
+              onDocRefresh={async () => {
+                try {
+                  const d = await api.getDocument(id);
+                  setDoc(d);
+                } catch (err) {
+                  if (err instanceof APIError) setError(err);
+                }
+              }}
+              onError={(err) => setError(err)}
+            />
+          )}
+
           {/* Multi-file gist affordance — surfaces when the gist has
               more files than the one we ingested. Clicking opens the
               gist landing page so the user can copy a different
@@ -1521,6 +1556,11 @@ export default function DocumentPage() {
                   onDelete={() => handleDelete(c)}
                   onEditReply={(rid, body) => handleEditReply(c, rid, body)}
                   onDeleteReply={(rid) => handleDeleteReply(c, rid)}
+                  onApplySuggestion={
+                    c.suggestion && !c.suggestion.appliedAt
+                      ? () => handleApplySuggestion(c)
+                      : undefined
+                  }
                 />
               ))}
             </div>

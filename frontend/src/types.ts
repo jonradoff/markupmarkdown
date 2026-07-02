@@ -68,6 +68,46 @@ export interface RevisionMeta {
    * token (MCP or REST). Mirrors Comment.actorKind. */
   actorKind?: "human" | "agent";
   ancestorSourceSha?: string;
+  /** Stamped when a human accepts an agent-authored revision (P0-3).
+   * Pushback refuses to ship an unaccepted agent revision to GitHub. */
+  acceptedAt?: string;
+  acceptedBy?: string;
+}
+
+/** Discrete coordination vocabulary for reviews (P0-1). Mirrors
+ * GitHub PR review states. `changes_requested` blocks pushback until
+ * the reviewer clears it or the pusher force-overrides. */
+export type ReviewState = "approved" | "changes_requested" | "commented";
+
+export interface Review {
+  documentId: string;
+  state: ReviewState;
+  note?: string;
+  author?: string;
+  authorAvatarUrl?: string;
+  actorKind?: "human" | "agent";
+  ownerName?: string;
+  ownerLogin?: string;
+  mine?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewSummary {
+  approved: number;
+  changesRequested: number;
+  commented: number;
+}
+
+/** Structured edit proposal attached to an anchored comment (P0-2).
+ * `replacement` is what should replace `comment.anchor.exact`.
+ * `appliedAt`/`appliedBy`/`appliedDocId` are stamped when a reviewer
+ * clicks Apply — the resulting manual revision id is captured too. */
+export interface Suggestion {
+  replacement: string;
+  appliedAt?: string;
+  appliedBy?: string;
+  appliedDocId?: string;
 }
 
 export interface ParentSummary {
@@ -142,6 +182,16 @@ export interface MdDocument {
    * most-recent-child walk. Renders as "v2 of 4" on the toolbar. */
   revisionTotal?: number;
   previouslyViewedAt?: string;
+  /** Review-state aggregate for this doc revision (P0-1). Populated
+   * on GET /api/documents/:id; empty when no one has reviewed. */
+  reviews?: ReviewSummary;
+  /** The current viewer's own review (P0-1). Null/undefined when
+   * they haven't reviewed. */
+  myReview?: Review;
+  /** True when the current revision was authored by an agent and
+   * hasn't been human-accepted (P0-3). Pushback refuses to ship
+   * these until they're accepted via POST /accept-revision. */
+  agentProposed?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -189,6 +239,13 @@ export interface PushbackInfo {
   suggestedPRTitle: string;
   suggestedPRBody: string;
   repoHtmlUrl: string;
+  /** At least one reviewer has state=changes_requested (P0-1). The
+   * modal renders a warning; sending force=true overrides. */
+  changesRequested?: boolean;
+  /** Current revision is agent-authored and not yet accepted (P0-3).
+   * The modal renders "Accept this revision first" with an Accept
+   * button; sending force=true overrides. */
+  agentProposed?: boolean;
 }
 
 /** A shareable listing of `.md` files anchored to a github resource.
@@ -359,6 +416,10 @@ export interface Comment {
   /** The quoted text from before the source change — what the
    * comment was originally about. Shown in the orphan card. */
   originalExact?: string;
+  /** Structured edit proposal on this anchored comment (P0-2). When
+   * present, the comment card renders a one-click Apply button.
+   * appliedAt/etc. get stamped when a reviewer applies it. */
+  suggestion?: Suggestion;
   replies: Reply[];
   createdAt: string;
   updatedAt: string;

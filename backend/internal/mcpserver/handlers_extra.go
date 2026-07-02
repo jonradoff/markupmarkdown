@@ -220,3 +220,107 @@ func (h *handlers) deleteComment(ctx context.Context, req mcp.CallToolRequest) (
 	h.api.LogTokenAction(ctx, id.TokenID, "comment.delete", "")
 	return jsonResult(map[string]string{"deleted": cid})
 }
+
+// --- add_suggestion ---
+
+func addSuggestionTool() mcp.Tool {
+	return mcp.NewTool("add_suggestion",
+		mcp.WithDescription(`Leave a review comment that carries a structured edit proposal — "replace this anchored text with THIS." Reviewers see a one-click Apply button. Applying it creates a manual revision + resolves the comment.
+
+Prefer this over add_comment when you have a specific concrete replacement in mind. Empirically the highest-actionability review artifact (Brown & Parnin ESEC/FSE '20). Anchor rules are identical to add_comment: 'quoted_text' must appear verbatim; use 'occurrence' (1-based) to disambiguate multi-match cases.
+
+Constraints: 'replacement' must be non-empty AND different from 'quoted_text' (a no-op suggestion is rejected).`),
+		mcp.WithString("document_id", mcp.Required(), mcp.Description("Document UUID.")),
+		mcp.WithString("quoted_text", mcp.Required(), mcp.Description("Verbatim substring from the document to anchor the suggestion to.")),
+		mcp.WithString("replacement", mcp.Required(), mcp.Description("The exact text that should replace 'quoted_text' when the suggestion is applied.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("Your rationale, in markdown — a short explanation of why the change.")),
+		mcp.WithNumber("occurrence", mcp.Description("1-based index of which occurrence of quoted_text to use (default 1).")),
+	)
+}
+
+func (h *handlers) addSuggestion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
+	if !h.api.AllowCommentRate(id.User.ID) {
+		return errorResult("rate limited: too many comments in a short window — slow down")
+	}
+	docID := req.GetString("document_id", "")
+	quoted := req.GetString("quoted_text", "")
+	body := req.GetString("body", "")
+	replacement := req.GetString("replacement", "")
+	occ := int(req.GetFloat("occurrence", 1))
+	if docID == "" || quoted == "" || body == "" || replacement == "" {
+		return errorResult("`document_id`, `quoted_text`, `body`, and `replacement` are required")
+	}
+	if len(quoted) > 4*1024 {
+		return errorResult("`quoted_text` too long (max 4KB)")
+	}
+	if len(replacement) > 32*1024 {
+		return errorResult("`replacement` too long (max 32KB)")
+	}
+	cleanBody, err := h.api.ValidateCommentBody(body)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	c, err := h.api.AddSuggestion(ctx, id.User.ID, docID, cleanBody, quoted, occ, replacement, id.TokenID, id.Label)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "suggestion.create", docID)
+	return jsonResult(c)
+}
+
+// --- set_review_state ---
+
+func setReviewStateTool() mcp.Tool {
+	return mcp.NewTool("set_review_state",
+		mcp.WithDescription(`Set your review state on a document — the discrete coordination signal beyond a free-form comment. Analogous to GitHub PR review states.
+
+state:
+  - "approved"           = you're satisfied with the current revision
+  - "changes_requested"  = you're blocking the push-to-GitHub flow until this is addressed
+  - "commented"          = you've reviewed but neither approve nor block
+
+Setting a state is idempotent: repeated calls with the same state just bump updated_at. Setting a different state replaces the prior one. "changes_requested" reviews block the pushback flow unless the pusher explicitly overrides with force=true. Every user has at most one review per document.`),
+		mcp.WithString("document_id", mcp.Required(), mcp.Description("Document UUID to review.")),
+		mcp.WithString("state", mcp.Required(), mcp.Description("One of: approved, changes_requested, commented.")),
+		mcp.WithString("note", mcp.Description("Optional short note (max 2000 chars) explaining the state.")),
+	)
+}
+
+func (h *handlers) setReviewState(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, _ := identityFrom(ctx)
+	if res, ok := requireScope(id, models.TokenScopeWrite); !ok {
+		return res, nil
+	}
+	docID := req.GetString("document_id", "")
+	state := req.GetString("state", "")
+	note := req.GetString("note", "")
+	if docID == "" || state == "" {
+		return errorResult("`document_id` and `state` are required")
+	}
+	if _, err := h.api.ValidateReviewState(state); err != nil {
+		return errorResult("%s", err.Error())
+	}
+	if _, err := h.api.DocAccess(ctx, id.User.ID, docID, id.User.AccessToken); err != nil {
+		return errorResult("%s", err.Error())
+	}
+	if len(note) > 2000 {
+		return errorResult("note is too long (max 2000 characters)")
+	}
+	rec, err := h.api.SetReviewState(ctx, id.User.ID, docID, state, note, id.TokenID)
+	if err != nil {
+		return errorResult("%s", err.Error())
+	}
+	h.api.LogTokenAction(ctx, id.TokenID, "review."+state, docID)
+	return jsonResult(map[string]any{
+		"state":       rec.State,
+		"documentId":  rec.DocumentID,
+		"note":        rec.Note,
+		"updatedAt":   rec.UpdatedAt,
+		"author":      rec.Author,
+		"actorKind":   rec.ActorKind,
+	})
+}

@@ -23,6 +23,9 @@ interface Props {
   /** When true, suppress the in-card quoted-text blockquote — used by
    * the orphan section which renders the original quote separately. */
   hideQuotedText?: boolean;
+  /** Fires when the reviewer clicks "Apply" on a suggestion. Only
+   * relevant when comment.suggestion is set and unapplied. */
+  onApplySuggestion?: () => Promise<void>;
 }
 
 function Avatar({
@@ -112,6 +115,7 @@ export default function CommentCard({
   onDeleteReply,
   requireIdentity,
   hideQuotedText,
+  onApplySuggestion,
 }: Props) {
   const { user } = useAuth();
   const dialog = useDialog();
@@ -120,6 +124,7 @@ export default function CommentCard({
   const [editing, setEditing] = useState(false);
   const [editBody, setEditBody] = useState(comment.body);
   const [busy, setBusy] = useState(false);
+  const [applying, setApplying] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   // Sidebar scroll-on-activate lives on the parent wrapper in
@@ -256,6 +261,52 @@ export default function CommentCard({
           ) : (
             <div className="text-sm text-ink">
               <RichBody body={comment.body} highlightLogin={user?.login} />
+            </div>
+          )}
+
+          {/* Suggested change (P0-2). Rendered only for anchored
+              comments that carry a Suggestion. Reviewers see the
+              proposed replacement and a one-click Apply. */}
+          {comment.suggestion && comment.anchor.exact && (
+            <div className="mt-3 rounded-md border border-rule bg-soft overflow-hidden">
+              <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-muted border-b border-rule">
+                Suggested change
+              </div>
+              <pre className="px-3 py-2 text-xs whitespace-pre-wrap break-words text-ink font-mono">
+                {comment.suggestion.replacement}
+              </pre>
+              <div className="flex items-center justify-between px-3 py-2 border-t border-rule bg-card">
+                {comment.suggestion.appliedAt ? (
+                  <span className="text-xs text-muted">
+                    Applied
+                    {comment.suggestion.appliedBy
+                      ? ` by ${comment.suggestion.appliedBy}`
+                      : ""}
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-xs text-muted">
+                      Replace the highlighted text with the block above.
+                    </span>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!onApplySuggestion || applying) return;
+                        setApplying(true);
+                        try {
+                          await onApplySuggestion();
+                        } finally {
+                          setApplying(false);
+                        }
+                      }}
+                      disabled={applying || !onApplySuggestion}
+                      className="text-xs px-2 py-1 rounded bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50"
+                    >
+                      {applying ? "Applying…" : "Apply"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>

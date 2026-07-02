@@ -58,10 +58,12 @@ Tokens can be scoped per-agent and revoked any time. Never embed the token in a 
 | Tool | What it does |
 |---|---|
 | `add_comment` | Anchors a new comment to a **verbatim substring** of the document. If the substring appears multiple times, pass `occurrence: N` (1-based). |
+| `add_suggestion` | Anchors a comment PLUS a structured "replace this with THIS" edit proposal. Reviewers see a one-click Apply button that creates a manual revision. Prefer this over `add_comment` when you have a specific concrete replacement in mind — empirically the highest-actionability review artifact. |
 | `reply` | Reply to an existing thread. |
 | `resolve_comment` / `reopen_comment` | Lifecycle. Resolved threads become eligible inputs for `revise_with_ai`. |
 | `patch_anchor` | Re-anchor an orphan comment, or convert any comment to a document-level pin (`doc_level: true`). Mine-only — you can only re-anchor comments you (or an agent token you own) wrote. |
 | `delete_comment` | Remove a thread you authored. Mine-only — same require-mine guard as the REST surface. |
+| `set_review_state` | Set your discrete review state on a doc: `approved`, `changes_requested`, or `commented`. Mirrors GitHub PR reviews. **`changes_requested` blocks the pushback flow** until you dismiss it (`set_review_state` with a different value) or the pusher explicitly sends `force: true`. |
 
 **Revising the document** (`admin` scope; these create or mutate doc content):
 
@@ -70,7 +72,11 @@ Tokens can be scoped per-agent and revoked any time. Never embed the token in a 
 | `revise_with_ai` | Runs Claude Opus 4.7 over the doc + selected resolved threads. Default `accept: false` returns a preview; `accept: true` saves the result as a new child document, carries unresolved comments forward, and returns the new ID. Uses the **human user's** stored Anthropic key. |
 | `edit_document` | Apply a manual edit by sending the full new content. Creates a new child revision in the chain; unresolved comments carry forward. Use when you've decided on a specific change yourself, rather than asking Claude to derive it from resolved threads. |
 | `merge_from_github` | Reconcile this doc with its upstream GitHub source via the 3-way Claude merge (ancestor = source content the revision was based on, ours = current doc, theirs = new upstream). Persists the merged content in place and re-anchors comments. Trivial cases (no AI revision, or upstream == ours) bypass Claude. Use when `get_document`'s drift indicators say upstream has changed. |
-| `push_to_github` | Opens a pull request from this doc's current content back to its source repo. PR mode only over MCP — direct-commit is intentionally web-UI-only for safety. Only push when a human has explicitly asked. |
+| `push_to_github` | Opens a pull request from this doc's current content back to its source repo. PR mode only over MCP — direct-commit is intentionally web-UI-only for safety. Only push when a human has explicitly asked. **Blocked** by unaccepted agent revisions (see below) and by any `changes_requested` review — pass `force: true` only when the human has explicitly overridden. |
+
+### Agent-proposed revisions
+
+Any revision written under an agent token (via `edit_document`, `revise_with_ai accept=true`, `merge_from_github`, or `apply_suggestion`) lands as **proposed**, not accepted. The pushback flow refuses to ship an unaccepted agent revision to GitHub until a **human** accepts it via `POST /api/documents/:id/accept-revision` (cookie session only — agents cannot self-accept, by design). This is the GitBook change-request pattern applied to the markupmarkdown chain: agent edits are real and live in the revision chain immediately, but the trip to the real repo is gated on a human review. Design principle: agents are first-class reviewers, not autonomous committers.
 
 ### When to edit vs revise vs merge
 

@@ -77,6 +77,22 @@ type API interface {
 	// with REST.
 	ValidateCommentBody(body string) (string, error)
 	ValidateReplyBody(body string) (string, error)
+
+	// SetReviewState is the MCP-side surface for P0-1's review-state
+	// vocabulary. Agents leave reviews the same way humans do; the
+	// pushback gate treats agent reviews and human reviews alike.
+	// state is one of "approved", "changes_requested", "commented".
+	SetReviewState(ctx context.Context, userID, docID, state, note, tokenID string) (*models.Review, error)
+	// ValidateReviewState mirrors the REST validation so tool handlers
+	// can reject bad inputs before the write.
+	ValidateReviewState(state string) (models.ReviewState, error)
+
+	// AddSuggestion is CreateComment + Suggestion stamping in one call.
+	// The comment is created against the anchored span exactly the same
+	// way add_comment produces it; the Suggestion field captures the
+	// proposed replacement so a reviewer can one-click apply it. Same
+	// scope + rate + validation as add_comment.
+	AddSuggestion(ctx context.Context, userID, docID, body, quotedText string, occurrence int, replacement, tokenID, agentLabel string) (*models.Comment, error)
 }
 
 // CommentAnchorOpts is the dual shape of PATCH /api/comments/:id/anchor:
@@ -184,6 +200,8 @@ func New(a API, _ *store.Store, siteURL string) http.Handler {
 	s.AddTool(pushTool(), h.push)
 	s.AddTool(listRevisionsTool(), h.listRevisions)
 	s.AddTool(deleteCommentTool(), h.deleteComment)
+	s.AddTool(setReviewStateTool(), h.setReviewState)
+	s.AddTool(addSuggestionTool(), h.addSuggestion)
 
 	httpServer := server.NewStreamableHTTPServer(s, server.WithStateLess(true))
 	return wrapAuth(httpServer, a)

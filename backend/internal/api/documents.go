@@ -510,6 +510,16 @@ type documentResponse struct {
 	// open of this doc, before this response. The frontend uses this to
 	// mark any comment whose updatedAt is newer as "unread". RFC3339 UTC.
 	PreviouslyViewedAt string `json:"previouslyViewedAt,omitempty"`
+	// Review state surface (P0-1). Summary carries the aggregate count
+	// for the badge; MyReview is the current viewer's own state (nil
+	// if they haven't reviewed). Set for cookie sessions AND
+	// authenticated tokens.
+	Reviews  *models.ReviewSummary `json:"reviews,omitempty"`
+	MyReview *models.Review        `json:"myReview,omitempty"`
+	// AgentProposed is true when the current revision was authored by
+	// an agent (via a Bearer token) and hasn't been human-accepted
+	// yet. Pushback refuses to ship these until accepted (P0-3).
+	AgentProposed bool `json:"agentProposed,omitempty"`
 }
 
 type parentSummary struct {
@@ -616,6 +626,29 @@ func (a *API) getDocument(w http.ResponseWriter, r *http.Request) {
 	resp.RevisionTotal = resp.RevisionIndex
 	if resp.LatestDescendant != nil && resp.LatestDescendant.RevisionIndex > resp.RevisionTotal {
 		resp.RevisionTotal = resp.LatestDescendant.RevisionIndex
+	}
+	// Review surface (P0-1). Summary is cheap; MyReview is a single
+	// keyed lookup. Both scoped to the exact doc revision the viewer
+	// is looking at — stale reviews on prior revisions are not
+	// surfaced here (they still exist in the store).
+	if reviews, err := a.store.ListReviews(r.Context(), doc.ID); err == nil {
+		summary := summarizeReviews(reviews)
+		resp.Reviews = &summary
+	}
+	if u := a.currentUser(r); u != nil {
+		if my, err := a.store.GetReview(r.Context(), doc.ID, u.ID); err == nil && my != nil {
+			a.resolveReviewIdentities(r.Context(), []models.Review{*my})
+			my.Mine = true
+			resp.MyReview = my
+		}
+	}
+	// Agent-proposed flag (P0-3). Any agent-authored revision that
+	// hasn't been human-accepted counts as "proposed". The pushback
+	// handler consults the same flag before shipping to GitHub.
+	if doc.RevisionMeta != nil &&
+		doc.RevisionMeta.ActorKind == models.ActorAgent &&
+		doc.RevisionMeta.AcceptedAt == nil {
+		resp.AgentProposed = true
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
